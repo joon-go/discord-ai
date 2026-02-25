@@ -1,0 +1,29 @@
+{
+  "name": "discord-support-bot",
+  "version": "1.0.0",
+  "description": "AI-powered Discord support bot with RAG, Claude API, and Pylon integration",
+  "main": "src/index.mjs",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.mjs",
+    "dev": "node --watch src/index.mjs",
+    "ingest": "node scripts/ingest-docs.mjs",
+    "test": "node scripts/test-rag.mjs",
+    "discover": "node scripts/discover-pylon.mjs",
+    "test:ticket": "node scripts/test-create-ticket.mjs",
+    "test:ticket:dry": "node scripts/test-create-ticket.mjs --dry-run"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.30.0",
+    "chromadb": "^1.8.0",
+    "chromadb-default-embed": "^2.13.2",
+    "cheerio": "^1.0.0",
+    "discord.js": "^14.16.0",
+    "dotenv": "^16.4.0",
+    "node-fetch": "^3.3.0",
+    "winston": "^3.14.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

@@ -1,0 +1,210 @@
+#!/usr/bin/env node
+/**
+ * Knowledge Base Ingestion Script
+ * ================================
+ * Crawls the documentation site and loads local files into ChromaDB.
+ *
+ * NOTE: Pylon KB articles are NOT ingested here — they are queried
+ * live via the Pylon API at runtime so they're always up to date.
+ *
+ * Sources:
+ *   1. Doc site crawl  (DOC_SITE_URL — product documentation)
+ *   2. Local files     (./data/ directory — .md and .txt files)
+ *
+ * Usage:
+ *   npm run ingest              # ingest all sources
+ *   npm run ingest -- --docs    # doc site only
+ *   npm run ingest -- --local   # local files only
+ */
+
+import 'dotenv/config';
+import { ChromaClient } from 'chromadb';
+import * as cheerio from 'cheerio';
+import fs from 'fs/promises';
+import path from 'path';
+
+const DOC_SITE_URL = process.env.DOC_SITE_URL || 'https://docs.coderabbit.ai';
+const MAX_PAGES = parseInt(process.env.MAX_CRAWL_PAGES || '200', 10);
+const COLLECTION_NAME = process.env.CHROMA_COLLECTION || 'support_kb';
+const CHUNK_SIZE = 800;
+const CHUNK_OVERLAP = 100;
+
+// ─── Crawl Doc Site ──────────────────────────────────────────────────
+async function crawlSite(baseUrl, maxPages) {
+  const visited = new Set();
+  const queue = [baseUrl];
+  const pages = [];
+
+  console.log(`\n🕷️  Crawling: ${baseUrl} (max ${maxPages} pages)...\n`);
+
+  while (queue.length > 0 && pages.length < maxPages) {
+    const url = queue.shift();
+    const normalized = url.split('#')[0].split('?')[0];
+
+    if (visited.has(normalized)) continue;
+    visited.add(normalized);
+
+    try {
+      const res = await fetch(url, {
+        headers: { 'User-Agent': 'CodeRabbit-SupportBot-Ingester/1.0' },
+        redirect: 'follow',
+      });
+      if (!res.ok) continue;
+
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('text/html')) continue;
+
+      const html = await res.text();
+      const $ = cheerio.load(html);
+
+      const title = $('h1').first().text().trim() ||
+                    $('title').text().trim() ||
+                    url;
+
+      const contentSelectors = [
+        'article', 'main', '.article-content', '.content',
+        '.markdown-body', '[role="main"]',
+      ];
+
+      let content = '';
+      for (const sel of contentSelectors) {
+        const el = $(sel).first();
+        if (el.length) {
+          content = el.text().replace(/\s+/g, ' ').trim();
+          if (content.length > 50) break;
+        }
+      }
+
+      if (content.length < 50) {
+        $('nav, header, footer, script, style, .sidebar, .nav').remove();
+        content = $('body').text().replace(/\s+/g, ' ').trim();
+      }
+
+      if (content.length > 50) {
+        pages.push({ url: normalized, title, content, source: 'Docs' });
+        process.stdout.write(`  ✓ ${pages.length}: ${title.slice(0, 60)}\n`);
+      }
+
+      $('a[href]').each((_, el) => {
+        const href = $(el).attr('href');
+        if (!href) return;
+        let fullUrl;
+        try { fullUrl = new URL(href, url).toString(); } catch { return; }
+        const baseHost = new URL(baseUrl).host;
+        const linkHost = new URL(fullUrl).host;
+        if (linkHost === baseHost && !visited.has(fullUrl.split('#')[0])) {
+          queue.push(fullUrl);
+        }
+      });
+    } catch (err) {
+      console.warn(`  ✗ Failed: ${url.slice(0, 80)} — ${err.message}`);
+    }
+  }
+
+  console.log(`\n  📄 Crawled ${pages.length} pages`);
+  return pages;
+}
+
+// ─── Load Local Files ────────────────────────────────────────────────
+async function loadLocalDocs(dirPath) {
+  const pages = [];
+  try {
+    const files = await fs.readdir(dirPath);
+    for (const file of files) {
+      if (!file.endsWith('.md') && !file.endsWith('.txt')) continue;
+      const content = await fs.readFile(path.join(dirPath, file), 'utf-8');
+      const title = content.split('\n')[0].replace(/^#+\s*/, '') || file;
+      pages.push({ url: `local://${file}`, title, content, source: 'Local' });
+      console.log(`  📁 Loaded: ${file}`);
+    }
+  } catch {
+    // data/ dir may not exist
+  }
+  return pages;
+}
+
+// ─── Chunk Text ──────────────────────────────────────────────────────
+function chunkText(text, size = CHUNK_SIZE, overlap = CHUNK_OVERLAP) {
+  const chunks = [];
+  let start = 0;
+  while (start < text.length) {
+    const end = Math.min(start + size, text.length);
+    chunks.push(text.slice(start, end));
+    start += Math.max(size - overlap, 1);
+    if (end === text.length) break;
+  }
+  return chunks;
+}
+
+// ─── Main ────────────────────────────────────────────────────────────
+async function main() {
+  const args = process.argv.slice(2);
+  const ingestDocs = args.length === 0 || args.includes('--docs');
+  const ingestLocal = args.length === 0 || args.includes('--local');
+
+  console.log('🚀 Starting knowledge base ingestion');
+  console.log('   (Pylon KB articles are fetched live at runtime — not ingested here)\n');
+
+  const allPages = [];
+
+  if (ingestDocs) {
+    const docPages = await crawlSite(DOC_SITE_URL, MAX_PAGES);
+    allPages.push(...docPages);
+  }
+
+  if (ingestLocal) {
+    console.log('\n📂 Loading local files from ./data/...');
+    const localPages = await loadLocalDocs('./data');
+    allPages.push(...localPages);
+  }
+
+  if (allPages.length === 0) {
+    console.log('\n⚠️  No content found. Check DOC_SITE_URL or add .md files to ./data/');
+    process.exit(1);
+  }
+
+  // Chunk
+  const allChunks = [];
+  for (const page of allPages) {
+    const chunks = chunkText(page.content);
+    for (const chunk of chunks) {
+      allChunks.push({
+        text: chunk,
+        metadata: { source: page.source, url: page.url, title: page.title },
+      });
+    }
+  }
+
+  console.log(`\n🔪 Created ${allChunks.length} chunks from ${allPages.length} pages`);
+
+  // Upsert into ChromaDB
+  console.log('\n📦 Upserting to ChromaDB...');
+  const client = new ChromaClient({
+    path: process.env.CHROMA_URL || 'http://localhost:8000',
+  });
+
+  try { await client.deleteCollection({ name: COLLECTION_NAME }); } catch {}
+
+  const collection = await client.createCollection({
+    name: COLLECTION_NAME,
+    metadata: { 'hnsw:space': 'cosine' },
+  });
+
+  const BATCH_SIZE = 100;
+  for (let i = 0; i < allChunks.length; i += BATCH_SIZE) {
+    const batch = allChunks.slice(i, i + BATCH_SIZE);
+    await collection.add({
+      ids: batch.map((_, j) => `doc-${i + j}`),
+      documents: batch.map(c => c.text),
+      metadatas: batch.map(c => c.metadata),
+    });
+    process.stdout.write(`  Upserted ${Math.min(i + BATCH_SIZE, allChunks.length)}/${allChunks.length}\r`);
+  }
+
+  console.log(`\n\n✅ Ingestion complete! ${allChunks.length} chunks in "${COLLECTION_NAME}"`);
+}
+
+main().catch((err) => {
+  console.error('❌ Ingestion failed:', err);
+  process.exit(1);
+});
