@@ -851,6 +851,20 @@ const SUPPORTED_IMAGE_TYPES = {
 const MAX_IMAGE_SIZE = 5 * 1024 * 1024; // 5MB
 const MAX_IMAGES = 5;
 
+/**
+ * Detect actual image MIME type from buffer magic bytes.
+ * Returns a supported media type or null if unrecognized.
+ */
+function detectImageType(buffer) {
+  const bytes = new Uint8Array(buffer);
+  if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return 'image/png';
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg';
+  if (bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46) return 'image/gif';
+  if (bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 &&
+      bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) return 'image/webp';
+  return null;
+}
+
 async function extractImageAttachments(message) {
   const images = [];
 
@@ -865,13 +879,18 @@ async function extractImageAttachments(message) {
       if (!response.ok) continue;
 
       const buffer = await response.arrayBuffer();
+      const actualType = detectImageType(buffer);
+      if (!actualType) {
+        logger.warn('Unrecognized image format from magic bytes, skipping', { filename: att.name });
+        continue;
+      }
       const base64 = Buffer.from(buffer).toString('base64');
 
       images.push({
         type: 'image',
         source: {
           type: 'base64',
-          media_type: att.contentType,
+          media_type: actualType,
           data: base64,
         },
       });
@@ -879,7 +898,8 @@ async function extractImageAttachments(message) {
       logger.info('Image attachment extracted', {
         filename: att.name,
         size: att.size,
-        type: att.contentType,
+        declaredType: att.contentType,
+        detectedType: actualType,
       });
     } catch (err) {
       logger.warn('Failed to fetch image attachment', { filename: att.name, error: err.message });
