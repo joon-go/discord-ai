@@ -38,7 +38,7 @@ async function getCollection() {
  * @param {string} query - The user's question
  * @returns {Promise<{ context: string, sources: string[] }>}
  */
-export async function queryKnowledgeBase(query) {
+export async function queryKnowledgeBase(query, _retried = false) {
   try {
     const col = await getCollection();
     const count = await col.count();
@@ -93,6 +93,12 @@ export async function queryKnowledgeBase(query) {
 
     return { context, sources: [...sources], refs };
   } catch (err) {
+    // Collection may have been recreated by ingest — reset cache and retry once
+    if (!_retried && err.message?.includes('could not be found')) {
+      logger.warn('Collection reference stale, refreshing and retrying', { error: err.message });
+      collection = null;
+      return queryKnowledgeBase(query, true);
+    }
     logger.error('KB query failed', { error: err.message });
     return { context: '', sources: [], refs: [] };
   }
