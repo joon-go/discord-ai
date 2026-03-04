@@ -10,6 +10,7 @@ import { generateResponse } from './claude.mjs';
 import { queryKnowledgeBase } from './rag.mjs';
 import { searchIssues, createIssue, buildTicketHtml, isPylonConfigured, searchKBArticles } from './pylon.mjs';
 import { getStatusContext } from './status.mjs';
+import { shouldRespond } from './intentClassifier.mjs';
 import { logger } from '../utils/logger.mjs';
 
 // ─── In-Memory Stores ───────────────────────────────────────────────
@@ -116,6 +117,17 @@ export async function handleMessage(message) {
   const lastMsg = cooldowns.get(userId);
   if (lastMsg && Date.now() - lastMsg < COOLDOWN_MS) return;
   cooldowns.set(userId, Date.now());
+
+  // ── Intent classification gate (skip for DMs and @mentions) ──
+  const isDM = !message.guild;
+  const isMentioned = message.mentions.has(message.client.user);
+  if (!isDM && !isMentioned) {
+    const relevant = await shouldRespond(text);
+    if (!relevant) {
+      logger.info('Skipping irrelevant message', { userId, username, query: text.slice(0, 80) });
+      return;
+    }
+  }
 
   await message.channel.sendTyping();
   const queryText = text || (hasImages ? 'Please analyze this image and help me with any CodeRabbit-related issue shown.' : '');
