@@ -798,18 +798,18 @@ function containsEscalationSignal(text) {
  * In these cases we should NOT also offer a support ticket button.
  */
 function containsNonSupportRouting(text) {
-  const nonSupportIndicators = [
+  const lower = text.toLowerCase();
+  const contactTargets = [
     'hello@coderabbit.ai',
     'hiring@coderabbit.ai',
     'events@coderabbit.ai',
     'security@coderabbit.ai',
     'vdp.coderabbit.ai',
     'coderabbit.ai/careers',
-    'partnership',
-    'business development',
   ];
-  const lower = text.toLowerCase();
-  return nonSupportIndicators.some(indicator => lower.includes(indicator));
+  const hasContactTarget = contactTargets.some(indicator => lower.includes(indicator));
+  const hasRoutingVerb = /(contact|email|reach out|write to|apply at|report to)/i.test(text);
+  return hasContactTarget && hasRoutingVerb;
 }
 
 /**
