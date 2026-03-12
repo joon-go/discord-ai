@@ -133,29 +133,21 @@ export async function handleMessage(message) {
   const queryText = text || (hasImages ? 'Please analyze this image and help me with any CodeRabbit-related issue shown.' : '');
   logger.info('Processing query', { userId, username, query: queryText.slice(0, 100), images: hasImages });
 
-  // ── Check if user wants a ticket/agent (skip KB retrieval) ──
+  // ── Check if user wants a ticket/agent ──
   const userWantsTicket = containsTicketIntent(queryText);
 
-  // ── Parallel retrieval (skip if user just wants a ticket) ──
-  let docContext = '';
-  let docSources = [];
-  let docRefs = [];
-  let kbArticles = [];
-  let pylonResults = [];
+  // ── Parallel retrieval (always fetch — KB may have routing info for non-support inquiries) ──
+  const [docResult, kbResult, pylonResult] = await Promise.all([
+    queryKnowledgeBase(queryText),
+    isPylonConfigured() ? searchKBArticles(queryText) : Promise.resolve([]),
+    isPylonConfigured() ? searchIssues(queryText) : Promise.resolve([]),
+  ]);
 
-  if (!userWantsTicket) {
-    const [docResult, kbResult, pylonResult] = await Promise.all([
-      queryKnowledgeBase(queryText),
-      isPylonConfigured() ? searchKBArticles(queryText) : Promise.resolve([]),
-      isPylonConfigured() ? searchIssues(queryText) : Promise.resolve([]),
-    ]);
-
-    docContext = docResult.context;
-    docSources = docResult.sources;
-    docRefs = docResult.refs || [];
-    kbArticles = kbResult;
-    pylonResults = pylonResult;
-  }
+  const docContext = docResult.context;
+  const docSources = docResult.sources;
+  const docRefs = docResult.refs || [];
+  const kbArticles = kbResult;
+  const pylonResults = pylonResult;
 
   const kbContext = kbArticles
     .map(a => `[KB: ${a.title}]: ${a.content.slice(0, 800)}`)
@@ -205,7 +197,9 @@ export async function handleMessage(message) {
   }
 
   // ── Offer ticket? ──
-  const shouldOfferTicket = isPylonConfigured() && (
+  // Don't offer ticket if Claude's response already routed the user to a non-support contact
+  const responseRoutedElsewhere = containsNonSupportRouting(responseText);
+  const shouldOfferTicket = isPylonConfigured() && !responseRoutedElsewhere && (
     userWantsTicket || !hasContext || containsEscalationSignal(responseText)
   );
 
@@ -796,6 +790,26 @@ function containsEscalationSignal(text) {
   ];
   const lower = text.toLowerCase();
   return signals.some(signal => lower.includes(signal));
+}
+
+/**
+ * Detect if Claude's response already routed the user to a non-support contact
+ * (e.g., partnership email, hiring page, events email, security disclosure).
+ * In these cases we should NOT also offer a support ticket button.
+ */
+function containsNonSupportRouting(text) {
+  const nonSupportIndicators = [
+    'hello@coderabbit.ai',
+    'hiring@coderabbit.ai',
+    'events@coderabbit.ai',
+    'security@coderabbit.ai',
+    'vdp.coderabbit.ai',
+    'coderabbit.ai/careers',
+    'partnership',
+    'business development',
+  ];
+  const lower = text.toLowerCase();
+  return nonSupportIndicators.some(indicator => lower.includes(indicator));
 }
 
 /**
