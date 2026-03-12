@@ -175,8 +175,11 @@ export async function handleMessage(message) {
 
   let responseText = await generateResponse(queryText, combinedContext, history, images);
 
-  // ── Compute routing detection from raw response BEFORE appending references ──
+  // ── Evaluate ticket/routing signals from raw Claude response (before mutation) ──
   const responseRoutedElsewhere = containsNonSupportRouting(responseText);
+  const shouldOfferTicket = isPylonConfigured() && !responseRoutedElsewhere && (
+    userWantsTicket || !hasContext || containsEscalationSignal(responseText)
+  );
 
   // ── Append reference links if KB/docs were used ──
   const allRefs = [...docRefs];
@@ -198,12 +201,6 @@ export async function handleMessage(message) {
     const refLinks = uniqueRefs.map(r => `• [${r.title}](${r.url})`).join('\n');
     responseText += `\n\n📚 **References:**\n${refLinks}`;
   }
-
-  // ── Offer ticket? ──
-  // Don't offer ticket if Claude's response already routed the user to a non-support contact
-  const shouldOfferTicket = isPylonConfigured() && !responseRoutedElsewhere && (
-    userWantsTicket || !hasContext || containsEscalationSignal(responseText)
-  );
 
   // ── Send reply ──
   const replyOptions = buildReply(responseText, shouldOfferTicket);
