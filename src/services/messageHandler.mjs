@@ -175,6 +175,9 @@ export async function handleMessage(message) {
 
   let responseText = await generateResponse(queryText, combinedContext, history, images);
 
+  // ── Compute routing detection from raw response BEFORE appending references ──
+  const responseRoutedElsewhere = containsNonSupportRouting(responseText);
+
   // ── Append reference links if KB/docs were used ──
   const allRefs = [...docRefs];
   // Add KB article URLs
@@ -198,7 +201,6 @@ export async function handleMessage(message) {
 
   // ── Offer ticket? ──
   // Don't offer ticket if Claude's response already routed the user to a non-support contact
-  const responseRoutedElsewhere = containsNonSupportRouting(responseText);
   const shouldOfferTicket = isPylonConfigured() && !responseRoutedElsewhere && (
     userWantsTicket || !hasContext || containsEscalationSignal(responseText)
   );
