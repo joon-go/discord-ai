@@ -350,12 +350,17 @@ export async function searchKBArticles(query, limit = 5) {
     ]);
 
     const queryWords = query.toLowerCase().split(/\s+/)
-      .filter(w => w.length > 2 && !stopwords.has(w));
+      .filter(w => w.length > 2 && !stopwords.has(w))
+      .map(w => w.replace(/[^\p{L}\p{N}_]+/gu, '')) // strip punctuation for matching
+      .filter(w => w.length > 2); // re-check length after stripping
     if (queryWords.length === 0) return [];
 
     const scored = articles.map(article => {
       const titleLower = article.title.toLowerCase();
       const contentLower = article.content.toLowerCase();
+      // Sanitized versions for punctuation-insensitive matching
+      const titleSanitized = titleLower.replace(/[^\p{L}\p{N}_\s]+/gu, '');
+      const contentSanitized = contentLower.replace(/[^\p{L}\p{N}_\s]+/gu, '');
       let score = 0;
       let matchedWords = 0;
 
@@ -377,17 +382,19 @@ export async function searchKBArticles(query, limit = 5) {
         'sponsor', 'collaborate', 'collaboration', 'sales', 'pricing', 'enterprise', 'quote',
         'account', 'purchase', 'buy', 'demo'];
       const queryHasNonSupportSignal = queryWords.some(w => nonSupportSignals.includes(w));
-      const articleIsContactInfo = titleLower.includes('contact') || titleLower.includes('non-support')
+      const articleIsContactInfo = titleSanitized.includes('contact') || titleSanitized.includes('nonsupport')
         || contentLower.includes('hello@coderabbit.ai') || contentLower.includes('security@coderabbit.ai')
         || contentLower.includes('sales@coderabbit.ai');
-      if (queryHasNonSupportSignal && articleIsContactInfo) {
+      const isContactBoost = queryHasNonSupportSignal && articleIsContactInfo;
+      if (isContactBoost) {
         score += 10; // ensure contact info article surfaces for non-support inquiries
         matchedWords = Math.max(matchedWords, 2);
       }
 
       // Require at least 2 matching words or 50% of query words
+      // Exception: contact boost articles bypass this gate to ensure they surface
       const minMatches = Math.max(2, Math.ceil(queryWords.length * 0.5));
-      if (matchedWords < minMatches) score = 0;
+      if (!isContactBoost && matchedWords < minMatches) score = 0;
 
       return { ...article, score };
     });
