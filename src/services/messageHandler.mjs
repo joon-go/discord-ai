@@ -806,9 +806,21 @@ function containsNonSupportRouting(text) {
     'vdp.coderabbit.ai',
     'coderabbit.ai/careers',
   ];
+function containsNonSupportRouting(text) {
+  const lower = text.toLowerCase();
+  const contactTargets = [
+    'hello@coderabbit.ai',
+    'hiring@coderabbit.ai',
+    'events@coderabbit.ai',
+    'security@coderabbit.ai',
+    'vdp.coderabbit.ai',
+    'coderabbit.ai/careers',
+  ];
   const hasContactTarget = contactTargets.some(indicator => lower.includes(indicator));
-  const hasRoutingVerb = /(contact|email|reach out|write to|apply at|report to)/i.test(text);
-  return hasContactTarget && hasRoutingVerb;
+  const hasRoutingVerb = /\b(contact|email|reach out|write to|apply at|report to)\b/i.test(lower);
+  const hasInquiryPattern = /\bfor\b.+\binquiries?\b/i.test(lower);
+  return hasContactTarget && (hasRoutingVerb || hasInquiryPattern);
+}
 }
 
 /**
