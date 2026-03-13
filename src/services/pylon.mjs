@@ -371,6 +371,18 @@ export async function searchKBArticles(query, limit = 5) {
         score += wordScore;
       }
 
+      // Boost articles that contain contact/routing info when query has non-support signals
+      const nonSupportSignals = ['partnership', 'partner', 'hiring', 'careers', 'career', 'job',
+        'event', 'conference', 'hackathon', 'security', 'vulnerability', 'business', 'marketing',
+        'sponsor', 'collaborate', 'collaboration'];
+      const queryHasNonSupportSignal = queryWords.some(w => nonSupportSignals.includes(w));
+      const articleIsContactInfo = titleLower.includes('contact') || titleLower.includes('non-support')
+        || contentLower.includes('hello@coderabbit.ai') || contentLower.includes('security@coderabbit.ai');
+      if (queryHasNonSupportSignal && articleIsContactInfo) {
+        score += 10; // ensure contact info article surfaces for non-support inquiries
+        matchedWords = Math.max(matchedWords, 2);
+      }
+
       // Require at least 2 matching words or 50% of query words
       const minMatches = Math.max(2, Math.ceil(queryWords.length * 0.5));
       if (matchedWords < minMatches) score = 0;
