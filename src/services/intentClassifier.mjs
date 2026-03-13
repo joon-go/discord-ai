@@ -2,7 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { logger } from '../utils/logger.mjs';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-const INTENT_MODEL = process.env.INTENT_MODEL || 'claude-haiku-4-20250414';
+const INTENT_MODEL = process.env.INTENT_MODEL || 'claude-haiku-4-5-20251001';
 
 const CLASSIFICATION_PROMPT = `You are a message classifier for a CodeRabbit support Discord channel.
 
