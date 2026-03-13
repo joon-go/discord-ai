@@ -801,6 +801,7 @@ function containsNonSupportRouting(text) {
   const contactTargets = [
     'hello@coderabbit.ai',
     'hiring@coderabbit.ai',
+    'sales@coderabbit.ai',
     'events@coderabbit.ai',
     'security@coderabbit.ai',
     'vdp.coderabbit.ai',

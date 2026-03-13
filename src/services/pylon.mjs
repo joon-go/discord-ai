@@ -374,10 +374,12 @@ export async function searchKBArticles(query, limit = 5) {
       // Boost articles that contain contact/routing info when query has non-support signals
       const nonSupportSignals = ['partnership', 'partner', 'hiring', 'careers', 'career', 'job',
         'event', 'conference', 'hackathon', 'security', 'vulnerability', 'business', 'marketing',
-        'sponsor', 'collaborate', 'collaboration'];
+        'sponsor', 'collaborate', 'collaboration', 'sales', 'pricing', 'enterprise', 'quote',
+        'account', 'purchase', 'buy', 'demo'];
       const queryHasNonSupportSignal = queryWords.some(w => nonSupportSignals.includes(w));
       const articleIsContactInfo = titleLower.includes('contact') || titleLower.includes('non-support')
-        || contentLower.includes('hello@coderabbit.ai') || contentLower.includes('security@coderabbit.ai');
+        || contentLower.includes('hello@coderabbit.ai') || contentLower.includes('security@coderabbit.ai')
+        || contentLower.includes('sales@coderabbit.ai');
       if (queryHasNonSupportSignal && articleIsContactInfo) {
         score += 10; // ensure contact info article surfaces for non-support inquiries
         matchedWords = Math.max(matchedWords, 2);
