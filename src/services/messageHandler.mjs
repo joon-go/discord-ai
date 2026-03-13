@@ -197,7 +197,7 @@ export async function handleMessage(message) {
     return true;
   }).slice(0, 3); // max 3 links
 
-  if (uniqueRefs.length > 0) {
+  if (uniqueRefs.length > 0 && !responseRoutedElsewhere) {
     const refLinks = uniqueRefs.map(r => `• [${r.title}](${r.url})`).join('\n');
     responseText += `\n\n📚 **References:**\n${refLinks}`;
   }
