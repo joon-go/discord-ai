@@ -197,7 +197,8 @@ export async function handleMessage(message) {
     return true;
   }).slice(0, 3); // max 3 links
 
-  if (uniqueRefs.length > 0 && !responseRoutedElsewhere) {
+  const isClarifyingResponse = isClarifyingQuestion(responseText);
+  if (uniqueRefs.length > 0 && !responseRoutedElsewhere && !isClarifyingResponse) {
     const refLinks = uniqueRefs.map(r => `• [${r.title}](${r.url})`).join('\n');
     responseText += `\n\n📚 **References:**\n${refLinks}`;
   }
@@ -808,6 +809,24 @@ function containsNonSupportRouting(text) {
     'coderabbit.ai/careers',
   ];
   return nonSupportContacts.some(contact => lower.includes(contact));
+}
+
+/**
+ * Detect if the response is a clarifying question rather than a specific answer.
+ * When the bot asks for more context, appending reference links is not useful.
+ */
+function isClarifyingQuestion(text) {
+  const lower = text.toLowerCase();
+  const clarifyingPatterns = [
+    /could you (clarify|specify|provide more|elaborate|tell me more)/,
+    /can you (clarify|specify|provide more|elaborate|tell me more)/,
+    /i need (a bit )?more context/,
+    /what (specifically|exactly) (are you|do you|would you)/,
+    /could you (be more specific|give me more details)/,
+    /what are you (trying|looking|asking)/,
+    /are you asking about/,
+  ];
+  return clarifyingPatterns.some(pattern => pattern.test(lower));
 }
 
 /**
