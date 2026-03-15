@@ -73,10 +73,12 @@ client.on(Events.MessageCreate, async (message) => {
 
   const channel = message.channel;
   const isDM = !message.guild;
-  const inSupportChannel = SUPPORT_CHANNELS.has(channel.id);
+  const isThread = channel.isThread?.();
+  const channelToCheck = isThread ? channel.parentId : channel.id;
+  const inSupportChannel = SUPPORT_CHANNELS.has(channelToCheck);
 
   // ── DMs: could be ticket collection or general support ──
-  // ── Support channels: normal Q&A ──
+  // ── Support channels (and their threads): normal Q&A ──
   if (!inSupportChannel && !isDM) return;
 
   try {
