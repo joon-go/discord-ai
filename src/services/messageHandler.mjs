@@ -175,6 +175,12 @@ export async function handleMessage(message) {
 
   let responseText = await generateResponse(queryText, combinedContext, history, images);
 
+  // ── Parse [CLARIFYING] tag from AI response ──
+  const isClarifyingResponse = responseText.startsWith('[CLARIFYING]');
+  if (isClarifyingResponse) {
+    responseText = responseText.replace(/^\[CLARIFYING\]\s*\n?/, '');
+  }
+
   // ── Evaluate ticket/routing signals from raw Claude response (before mutation) ──
   const responseRoutedElsewhere = containsNonSupportRouting(responseText);
   const shouldOfferTicket = isPylonConfigured() && !responseRoutedElsewhere && (
@@ -197,7 +203,7 @@ export async function handleMessage(message) {
     return true;
   }).slice(0, 3); // max 3 links
 
-  if (uniqueRefs.length > 0 && !responseRoutedElsewhere) {
+  if (uniqueRefs.length > 0 && !responseRoutedElsewhere && !isClarifyingResponse) {
     const refLinks = uniqueRefs.map(r => `• [${r.title}](${r.url})`).join('\n');
     responseText += `\n\n📚 **References:**\n${refLinks}`;
   }
