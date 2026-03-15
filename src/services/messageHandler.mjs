@@ -167,8 +167,16 @@ export async function handleMessage(message) {
     unansweredLog.push({ query: text, userId, timestamp: new Date().toISOString() });
   }
 
-  // ── Generate response ──
-  const history = conversationHistory.get(userId) || [];
+  // ── Build conversation history ──
+  // For threads: fetch thread messages for full context (all participants)
+  // For channels/DMs: use per-user history
+  const isThread = message.channel.isThread?.();
+  let history;
+  if (isThread) {
+    history = await fetchThreadHistory(message);
+  } else {
+    history = conversationHistory.get(userId) || [];
+  }
 
   // Extract image attachments
   const images = await extractImageAttachments(message);
@@ -228,13 +236,15 @@ export async function handleMessage(message) {
     setTimeout(() => pendingTickets.delete(ticketKey), 24 * 60 * 60 * 1000);
   }
 
-  // ── Update history ──
-  const updatedHistory = [
-    ...history,
-    { role: 'user', content: queryText },
-    { role: 'assistant', content: responseText },
-  ].slice(-MAX_HISTORY * 2);
-  conversationHistory.set(userId, updatedHistory);
+  // ── Update history (skip for threads — thread context is fetched live) ──
+  if (!isThread) {
+    const updatedHistory = [
+      ...history,
+      { role: 'user', content: queryText },
+      { role: 'assistant', content: responseText },
+    ].slice(-MAX_HISTORY * 2);
+    conversationHistory.set(userId, updatedHistory);
+  }
 
   logger.info('Response sent', {
     userId,
@@ -856,6 +866,51 @@ function containsTicketIntent(text) {
     'want to speak to',
   ];
   return directPhrases.some(phrase => lower.includes(phrase));
+}
+
+/**
+ * Fetch recent messages from a Discord thread and build a conversation history
+ * array suitable for Claude's messages API. Includes all participants' messages
+ * so the bot has full thread context.
+ */
+const MAX_THREAD_MESSAGES = 20;
+
+async function fetchThreadHistory(message) {
+  try {
+    const fetched = await message.channel.messages.fetch({
+      limit: MAX_THREAD_MESSAGES,
+      before: message.id, // exclude the current message (it's added separately)
+    });
+
+    // Messages come newest-first, reverse to chronological order
+    const sorted = [...fetched.values()].reverse();
+
+    const history = [];
+    for (const msg of sorted) {
+      const isBot = msg.author.id === message.client.user?.id;
+      const role = isBot ? 'assistant' : 'user';
+      const content = isBot
+        ? msg.content
+        : `[${msg.author.username}]: ${msg.content}`;
+
+      // Claude requires alternating user/assistant roles — merge consecutive same-role messages
+      if (history.length > 0 && history[history.length - 1].role === role) {
+        history[history.length - 1].content += `\n${content}`;
+      } else {
+        history.push({ role, content });
+      }
+    }
+
+    // Ensure history starts with a user message (Claude API requirement)
+    while (history.length > 0 && history[0].role !== 'user') {
+      history.shift();
+    }
+
+    return history;
+  } catch (err) {
+    logger.warn('Failed to fetch thread history', { error: err.message });
+    return [];
+  }
 }
 
 async function disableButtons(message) {
