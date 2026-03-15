@@ -168,11 +168,12 @@ export async function handleMessage(message) {
   }
 
   // ── Build conversation history ──
-  // For threads: fetch thread messages for full context (all participants)
-  // For channels/DMs: use per-user history
+  // For threads triggered by mention: fetch thread messages for full context (all participants)
+  // For all other cases (channels/DMs/non-mention threads): use per-user history
   const isThread = message.channel.isThread?.();
+  const isMentionTriggeredThread = isThread && isMentioned;
   let history;
-  if (isThread) {
+  if (isMentionTriggeredThread) {
     history = await fetchThreadHistory(message);
   } else {
     history = conversationHistory.get(userId) || [];
@@ -238,8 +239,8 @@ export async function handleMessage(message) {
     setTimeout(() => pendingTickets.delete(ticketKey), 24 * 60 * 60 * 1000);
   }
 
-  // ── Update history (skip for threads — thread context is fetched live) ──
-  if (!isThread) {
+  // ── Update history (skip for mention-triggered threads — thread context is fetched live) ──
+  if (!isMentionTriggeredThread) {
     const updatedHistory = [
       ...history,
       { role: 'user', content: queryText },
