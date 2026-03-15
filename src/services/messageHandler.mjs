@@ -183,10 +183,12 @@ export async function handleMessage(message) {
 
   let responseText = await generateResponse(queryText, combinedContext, history, images);
 
-  // ── Parse [CLARIFYING] tag from AI response ──
-  const isClarifyingResponse = responseText.startsWith('[CLARIFYING]');
-  if (isClarifyingResponse) {
-    responseText = responseText.replace(/^\[CLARIFYING\]\s*\n?/, '');
+  // ── Parse [NO_REFS] tag from AI response ──
+  // AI prefixes with [NO_REFS] when the response doesn't answer a specific product question
+  // (clarifications, off-topic declines, non-support redirects, etc.)
+  const suppressRefs = responseText.startsWith('[NO_REFS]');
+  if (suppressRefs) {
+    responseText = responseText.replace(/^\[NO_REFS\]\s*\n?/, '');
   }
 
   // ── Evaluate ticket/routing signals from raw Claude response (before mutation) ──
@@ -211,7 +213,7 @@ export async function handleMessage(message) {
     return true;
   }).slice(0, 3); // max 3 links
 
-  if (uniqueRefs.length > 0 && !responseRoutedElsewhere && !isClarifyingResponse) {
+  if (uniqueRefs.length > 0 && !responseRoutedElsewhere && !suppressRefs) {
     const refLinks = uniqueRefs.map(r => `• [${r.title}](${r.url})`).join('\n');
     responseText += `\n\n📚 **References:**\n${refLinks}`;
   }
