@@ -184,18 +184,18 @@ export async function handleMessage(message) {
 
   let responseText = await generateResponse(queryText, combinedContext, history, images);
 
-  // ── Parse [NO_REFS] tag from AI response ──
-  // AI prefixes with [NO_REFS] when the response doesn't answer a specific product question
-  // (clarifications, off-topic declines, non-support redirects, etc.)
-  const suppressRefs = responseText.startsWith('[NO_REFS]');
-  if (suppressRefs) {
-    responseText = responseText.replace(/^\[NO_REFS\]\s*\n?/, '');
-  }
+  // ── Parse metadata tags from AI response ──
+  // AI prefixes with [NO_REFS] and/or [TICKET] on the first line
+  const firstLine = responseText.split('\n')[0];
+  const suppressRefs = firstLine.includes('[NO_REFS]');
+  const aiWantsTicket = firstLine.includes('[TICKET]');
+  // Strip all metadata tags from the response
+  responseText = responseText.replace(/^(\[NO_REFS\]\s*|\[TICKET\]\s*)+\n?/, '');
 
-  // ── Evaluate ticket/routing signals from raw Claude response (before mutation) ──
+  // ── Evaluate ticket/routing signals ──
   const responseRoutedElsewhere = containsNonSupportRouting(responseText);
   const shouldOfferTicket = isPylonConfigured() && !responseRoutedElsewhere && (
-    userWantsTicket || !hasContext || containsEscalationSignal(responseText)
+    userWantsTicket || aiWantsTicket || !hasContext || containsEscalationSignal(responseText)
   );
 
   // ── Append reference links if KB/docs were used ──
