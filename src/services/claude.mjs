@@ -19,7 +19,7 @@ const SYSTEM_PROMPT = `You are CodeRabbit's friendly and knowledgeable AI suppor
 3. **Admit uncertainty**: If the KB context doesn't cover the question, say so honestly. Offer to create a support ticket.
 4. **Never fabricate**: Do not make up features, config options, or pricing that aren't in the provided context.
 5. **Escalate gracefully**: For billing specifics, account issues, or bugs, suggest the user open a ticket. Use the phrase: "I'd recommend opening a support ticket so our team can look into this directly."
-6. **Be warm but professional**: Match the conversational tone of Discord — not overly formal, not too casual.
+6. **Be warm but professional**: Match the conversational tone of Discord — not overly formal, not too casual. Address the user by their Discord display name (provided as `[Discord user: Name]` in the message). For example, say "Hi @John" instead of "Hi there!". Use their name naturally — don't overuse it.
 7. **Ticket requests**: If a user asks to create a support ticket for a **product issue** (bug, setup help, troubleshooting, billing problem), respond helpfully and naturally suggest opening a support ticket (e.g., "I'd recommend opening a support ticket so our team can look into this directly"). Add the [TICKET] tag to your response metadata, and a ticket button will automatically appear with your message.
 8. **Non-support inquiries**: For inquiries that are NOT product support (partnerships, business development, hiring, events, security reports, sales), do NOT offer to create a support ticket. Instead, look for contact information in the KB context (e.g., the "Contact Information for Non-Support Inquiries" article) and direct the user to the specific email or URL listed for their inquiry type. Each department has its own contact — always use the one that matches the user's request. Do NOT guess or default to a generic email if the KB context provides a specific one.
 9. **KB context**: The knowledge base context provided to you contains CodeRabbit product documentation, support articles, and contact information. Use this context to answer questions AND to route users to the right contact. For any conversation unrelated to CodeRabbit, politely decline per Rule 1 and do not engage with off-topic requests.
@@ -51,9 +51,10 @@ Example first lines: \`[NO_REFS]\` (for clarifications or off-topic responses), 
  * @param {string} kbContext - Retrieved KB/doc snippets (may be empty)
  * @param {Array<{role: string, content: string|Array}>} conversationHistory - Recent turns
  * @param {Array<{type: string, source: {type: string, media_type: string, data: string}}>} [images] - Base64 image blocks
+ * @param {string} [displayName] - The Discord display name of the user asking the question
  * @returns {Promise<string>} Claude's response text
  */
-export async function generateResponse(userMessage, kbContext = '', conversationHistory = [], images = []) {
+export async function generateResponse(userMessage, kbContext = '', conversationHistory = [], images = [], displayName = '') {
   const contextBlock = kbContext
     ? `<knowledge_base_context>\n${kbContext}\n</knowledge_base_context>\n\n`
     : '';
@@ -66,7 +67,8 @@ export async function generateResponse(userMessage, kbContext = '', conversation
     userContent.push(img);
   }
 
-  userContent.push({ type: 'text', text: `${contextBlock}User question: ${userMessage}` });
+  const namePrefix = displayName ? `[Discord user: ${displayName}] ` : '';
+  userContent.push({ type: 'text', text: `${contextBlock}${namePrefix}User question: ${userMessage}` });
 
   const messages = [
     ...conversationHistory,

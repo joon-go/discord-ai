@@ -98,6 +98,7 @@ const REQUIRED_FIELDS = [
 export async function handleMessage(message) {
   const userId = message.author.id;
   const username = message.author.username;
+  const displayName = message.member?.displayName || message.author.displayName || username;
   const text = message.content.trim();
   const hasImages = message.attachments.some(att => att.contentType?.startsWith('image/'));
 
@@ -200,7 +201,7 @@ export async function handleMessage(message) {
   // Extract image attachments
   const images = await extractImageAttachments(message);
 
-  let responseText = await generateResponse(queryText, combinedContext, history, images);
+  let responseText = await generateResponse(queryText, combinedContext, history, images, displayName);
 
   // ── Parse metadata tags from AI response ──
   // AI prefixes with [NO_REFS] and/or [TICKET] on the first line
