@@ -121,6 +121,24 @@ export async function handleMessage(message) {
   // ── Intent classification gate (skip for DMs and @mentions) ──
   const isDM = !message.guild;
   const isMentioned = message.mentions.has(message.client.user);
+
+  // ── Skip human-to-human replies unless bot is @mentioned ──
+  // If someone replies to another human's message (not the bot's), they're
+  // having a human conversation — the bot should not jump in unless explicitly called.
+  // The bot only auto-responds to: top-level messages, replies to its own messages,
+  // @mentions, and DMs.
+  if (!isDM && !isMentioned && message.reference?.messageId) {
+    try {
+      const repliedTo = await message.channel.messages.fetch(message.reference.messageId);
+      if (repliedTo.author.id !== message.client.user.id) {
+        logger.info('Skipping reply to another human', { userId, username, repliedToUser: repliedTo.author.username });
+        return;
+      }
+    } catch {
+      // If we can't fetch the referenced message, proceed normally
+    }
+  }
+
   if (!isDM && !isMentioned) {
     const relevant = await shouldRespond(text);
     if (!relevant) {
