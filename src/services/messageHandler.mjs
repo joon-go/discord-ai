@@ -184,18 +184,24 @@ export async function handleMessage(message) {
 
   let responseText = await generateResponse(queryText, combinedContext, history, images);
 
-  // ── Parse [NO_REFS] tag from AI response ──
-  // AI prefixes with [NO_REFS] when the response doesn't answer a specific product question
-  // (clarifications, off-topic declines, non-support redirects, etc.)
-  const suppressRefs = responseText.startsWith('[NO_REFS]');
-  if (suppressRefs) {
-    responseText = responseText.replace(/^\[NO_REFS\]\s*\n?/, '');
-  }
+  // ── Parse metadata tags from AI response ──
+  // AI prefixes with [NO_REFS] and/or [TICKET] on the first line
+  // Match only tags at the beginning (as whole tokens), in any order
+  const metadataMatch = responseText.match(/^(\s*(?:\[NO_REFS\]|\[TICKET\])\s*)+/);
+  const metadataPrefix = metadataMatch ? metadataMatch[0] : '';
+  const suppressRefs = metadataPrefix.includes('[NO_REFS]');
+  const aiWantsTicket = metadataPrefix.includes('[TICKET]');
+  // Strip the matched metadata prefix from the response
+  responseText = metadataPrefix ? responseText.slice(metadataPrefix.length).replace(/^\n/, '') : responseText;
 
-  // ── Evaluate ticket/routing signals from raw Claude response (before mutation) ──
+  // ── Evaluate ticket/routing signals ──
+  // NOTE: Ticket offers rely on explicit signals only. If KB retrieval returns
+  // no context, the model is responsible for surfacing that via the [TICKET] tag
+  // rather than the code inferring it from hasContext (which would falsely trigger
+  // tickets for off-topic declines and [NO_REFS] responses).
   const responseRoutedElsewhere = containsNonSupportRouting(responseText);
   const shouldOfferTicket = isPylonConfigured() && !responseRoutedElsewhere && (
-    userWantsTicket || !hasContext || containsEscalationSignal(responseText)
+    userWantsTicket || aiWantsTicket || containsEscalationSignal(responseText)
   );
 
   // ── Append reference links if KB/docs were used ──
