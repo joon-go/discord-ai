@@ -186,11 +186,13 @@ export async function handleMessage(message) {
 
   // ── Parse metadata tags from AI response ──
   // AI prefixes with [NO_REFS] and/or [TICKET] on the first line
-  const firstLine = responseText.split('\n')[0];
-  const suppressRefs = firstLine.includes('[NO_REFS]');
-  const aiWantsTicket = firstLine.includes('[TICKET]');
-  // Strip all metadata tags from the response
-  responseText = responseText.replace(/^(\[NO_REFS\]\s*|\[TICKET\]\s*)+\n?/, '');
+  // Match only tags at the beginning (as whole tokens), in any order
+  const metadataMatch = responseText.match(/^(\s*(?:\[NO_REFS\]|\[TICKET\])\s*)+/);
+  const metadataPrefix = metadataMatch ? metadataMatch[0] : '';
+  const suppressRefs = metadataPrefix.includes('[NO_REFS]');
+  const aiWantsTicket = metadataPrefix.includes('[TICKET]');
+  // Strip the matched metadata prefix from the response
+  responseText = metadataPrefix ? responseText.slice(metadataPrefix.length).replace(/^\n/, '') : responseText;
 
   // ── Evaluate ticket/routing signals ──
   const responseRoutedElsewhere = containsNonSupportRouting(responseText);
