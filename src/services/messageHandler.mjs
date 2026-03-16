@@ -195,9 +195,13 @@ export async function handleMessage(message) {
   responseText = metadataPrefix ? responseText.slice(metadataPrefix.length).replace(/^\n/, '') : responseText;
 
   // ── Evaluate ticket/routing signals ──
+  // NOTE: Ticket offers rely on explicit signals only. If KB retrieval returns
+  // no context, the model is responsible for surfacing that via the [TICKET] tag
+  // rather than the code inferring it from hasContext (which would falsely trigger
+  // tickets for off-topic declines and [NO_REFS] responses).
   const responseRoutedElsewhere = containsNonSupportRouting(responseText);
   const shouldOfferTicket = isPylonConfigured() && !responseRoutedElsewhere && (
-    userWantsTicket || aiWantsTicket || !hasContext || containsEscalationSignal(responseText)
+    userWantsTicket || aiWantsTicket || containsEscalationSignal(responseText)
   );
 
   // ── Append reference links if KB/docs were used ──
