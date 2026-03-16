@@ -206,17 +206,33 @@ export async function handleMessage(message) {
       allRefs.push({ url: article.url, title: article.title });
     }
   }
-  // Deduplicate by URL
+  // Deduplicate by URL and by title (same article can appear with different URLs)
   const seenUrls = new Set();
+  const seenTitles = new Set();
   const uniqueRefs = allRefs.filter(r => {
-    if (seenUrls.has(r.url)) return false;
-    seenUrls.add(r.url);
+    const normalizedUrl = r.url.replace(/\/+$/, '').replace(/#.*$/, '');
+    const normalizedTitle = r.title.toLowerCase().trim();
+    if (seenUrls.has(normalizedUrl) || seenTitles.has(normalizedTitle)) return false;
+    seenUrls.add(normalizedUrl);
+    seenTitles.add(normalizedTitle);
     return true;
   }).slice(0, 3); // max 3 links
 
   if (uniqueRefs.length > 0 && !responseRoutedElsewhere && !suppressRefs) {
     const refLinks = uniqueRefs.map(r => `• [${r.title}](${r.url})`).join('\n');
     responseText += `\n\n📚 **References:**\n${refLinks}`;
+  }
+
+  // ── First-time user greeting ──
+  const isFirstInteraction = !conversationHistory.has(userId);
+  if (isFirstInteraction) {
+    const greeting = `👋 Hi there! I'm **AI Bunny**, CodeRabbit's support assistant.\n`
+      + `Here's how I can help:\n`
+      + `• **Ask me anything** about CodeRabbit — setup, configuration, reviews, billing, CLI, and more\n`
+      + `• **Create a support ticket** — just ask and I'll guide you through it\n`
+      + `• **Tag me in threads** — mention \`@AI Bunny\` and I'll read the thread context and jump in\n\n`
+      + `---\n\n`;
+    responseText = greeting + responseText;
   }
 
   // ── Send reply ──
