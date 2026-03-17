@@ -251,7 +251,7 @@ export async function handleMessage(message) {
   // ── First-time user greeting ──
   const isFirstInteraction = !conversationHistory.has(userId);
   if (isFirstInteraction) {
-    const greeting = `👋 Hi there! I'm **AI Bunny**, CodeRabbit's support assistant.\n`
+    const greeting = `👋 Hi <@${userId}>! I'm **AI Bunny**, CodeRabbit's support assistant.\n`
       + `Here's how I can help:\n`
       + `• **Ask me anything** about CodeRabbit — setup, configuration, reviews, billing, CLI, and more\n`
       + `• **Create a support ticket** — just ask and I'll guide you through it\n`
