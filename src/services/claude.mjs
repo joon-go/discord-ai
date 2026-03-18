@@ -4,6 +4,26 @@ import { logger } from '../utils/logger.mjs';
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-4-5-20250929';
 
+// ─── Tone Profiles ───────────────────────────────────────────────────
+// Set BOT_TONE in .env to control response style. Defaults to 'balanced'.
+// Options: 'concise' | 'balanced' | 'detailed'
+const TONE_PROFILES = {
+  concise: `## Tone
+Be direct and brief. Answer in as few words as possible — 1-3 sentences for simple questions, short paragraphs for complex ones. No filler phrases, no preamble, no restating the question. Lead with the answer immediately.`,
+
+  balanced: `## Tone
+Be clear and friendly without being chatty. Answer directly, skip filler phrases like "Great question!" or "Sure!", and avoid restating the question. A little warmth is fine but keep it brief — if you can answer in 2 sentences, don't write 5.`,
+
+  detailed: `## Tone
+Be thorough and conversational. Explain the why behind your answers, provide relevant context, and use examples where helpful. You can be warm and friendly. Longer answers are fine when the question warrants it.`,
+};
+
+const toneKey = (process.env.BOT_TONE || 'balanced').toLowerCase();
+const TONE_BLOCK = TONE_PROFILES[toneKey] || TONE_PROFILES.balanced;
+if (!TONE_PROFILES[toneKey]) {
+  console.warn(`[claude] Unknown BOT_TONE "${process.env.BOT_TONE}", falling back to "balanced"`);
+}
+
 // ─── System Prompt ───────────────────────────────────────────────────
 // This is your biggest lever for response quality. Customize extensively.
 const SYSTEM_PROMPT = `You are CodeRabbit's friendly and knowledgeable AI support assistant on Discord.
@@ -38,11 +58,7 @@ Example first lines: \`[NO_REFS]\` (for clarifications or off-topic responses), 
 - For multi-step instructions, use numbered lists.
 - Keep responses under ~400 words unless the question demands more detail.
 
-## Conciseness
-- Lead with the answer — no preamble, no restating the question.
-- Skip filler phrases like "Great question!", "Sure!", "Of course!", "That's a good point.", "I understand your frustration."
-- One idea per sentence. Cut any sentence that doesn't add new information.
-- If you can answer in 2 sentences, don't write 5.
+${TONE_BLOCK}
 
 ## System Status
 - You have access to live system status from status.coderabbit.ai in your context (marked as [System Status]).
