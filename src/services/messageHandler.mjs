@@ -204,14 +204,12 @@ export async function handleMessage(message) {
   let responseText = await generateResponse(queryText, combinedContext, history, images, displayName);
 
   // ── Parse metadata tags from AI response ──
-  // AI prefixes with [NO_REFS] and/or [TICKET] on the first line
-  // Match only tags at the beginning (as whole tokens), in any order
-  const metadataMatch = responseText.match(/^(\s*(?:\[NO_REFS\]|\[TICKET\])\s*)+/);
-  const metadataPrefix = metadataMatch ? metadataMatch[0] : '';
-  const suppressRefs = metadataPrefix.includes('[NO_REFS]');
-  const aiWantsTicket = metadataPrefix.includes('[TICKET]');
-  // Strip the matched metadata prefix from the response
-  responseText = metadataPrefix ? responseText.slice(metadataPrefix.length).replace(/^\n/, '') : responseText;
+  // AI may include [NO_REFS] and/or [TICKET] tags anywhere in the response
+  // (ideally on the first line, but Claude sometimes places them mid-response or at the end)
+  const suppressRefs = responseText.includes('[NO_REFS]');
+  const aiWantsTicket = responseText.includes('[TICKET]');
+  // Strip all metadata tags from the response regardless of position
+  responseText = responseText.replace(/\[NO_REFS\]|\[TICKET\]/g, '').replace(/^\n+/, '').trim();
 
   // ── Evaluate ticket/routing signals ──
   // NOTE: Ticket offers rely on explicit signals only. If KB retrieval returns
