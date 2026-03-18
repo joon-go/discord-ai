@@ -204,14 +204,12 @@ export async function handleMessage(message) {
   let responseText = await generateResponse(queryText, combinedContext, history, images, displayName);
 
   // ── Parse metadata tags from AI response ──
-  // AI prefixes with [NO_REFS] and/or [TICKET] on the first line
-  // Match only tags at the beginning (as whole tokens), in any order
-  const metadataMatch = responseText.match(/^(\s*(?:\[NO_REFS\]|\[TICKET\])\s*)+/);
-  const metadataPrefix = metadataMatch ? metadataMatch[0] : '';
-  const suppressRefs = metadataPrefix.includes('[NO_REFS]');
-  const aiWantsTicket = metadataPrefix.includes('[TICKET]');
-  // Strip the matched metadata prefix from the response
-  responseText = metadataPrefix ? responseText.slice(metadataPrefix.length).replace(/^\n/, '') : responseText;
+  // AI may include [NO_REFS] and/or [TICKET] tags anywhere in the response
+  // (ideally on the first line, but Claude sometimes places them mid-response or at the end)
+  const suppressRefs = responseText.includes('[NO_REFS]');
+  const aiWantsTicket = responseText.includes('[TICKET]');
+  // Strip all metadata tags from the response regardless of position
+  responseText = responseText.replace(/\[NO_REFS\]|\[TICKET\]/g, '').replace(/^\n+/, '').trim();
 
   // ── Evaluate ticket/routing signals ──
   // NOTE: Ticket offers rely on explicit signals only. If KB retrieval returns
@@ -260,13 +258,31 @@ export async function handleMessage(message) {
     responseText = greeting + responseText;
   }
 
-  // ── Send reply ──
-  const replyOptions = buildReply(responseText, shouldOfferTicket);
-  const botReply = await message.reply(replyOptions);
+  // ── Send reply (split into chunks if > 2000 chars) ──
+  const chunks = splitMessage(responseText);
+  if (chunks.length === 0) {
+    chunks.push(
+      shouldOfferTicket
+        ? 'I can help with that — use the button below to create a support ticket.'
+        : 'Sorry, I couldn't generate a response. Please try again.'
+    );
+  }
+  let botReply;
+  let lastChunkReply;
+  for (let i = 0; i < chunks.length; i++) {
+    const isLast = i === chunks.length - 1;
+    const replyOptions = buildReply(chunks[i], isLast && shouldOfferTicket);
+    if (i === 0) {
+      botReply = await message.reply(replyOptions);
+      lastChunkReply = botReply;
+    } else {
+      lastChunkReply = await message.channel.send(replyOptions);
+    }
+  }
 
-  // ── Store pending ticket context ──
-  if (shouldOfferTicket && botReply) {
-    const ticketKey = `${userId}-${botReply.id}`;
+  // ── Store pending ticket context (keyed to last chunk so button works) ──
+  if (shouldOfferTicket && lastChunkReply) {
+    const ticketKey = `${userId}-${lastChunkReply.id}`;
     pendingTickets.set(ticketKey, {
       query: queryText,
       response: responseText,
@@ -811,9 +827,7 @@ function extractInfoFromConversation(text) {
 }
 
 function buildReply(responseText, includeTicketButton) {
-  const content = responseText.length > 2000
-    ? responseText.slice(0, 1997) + '...'
-    : responseText;
+  const content = responseText;
 
   if (!includeTicketButton) {
     return { content };
