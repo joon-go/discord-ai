@@ -260,13 +260,24 @@ export async function handleMessage(message) {
     responseText = greeting + responseText;
   }
 
-  // ── Send reply ──
-  const replyOptions = buildReply(responseText, shouldOfferTicket);
-  const botReply = await message.reply(replyOptions);
+  // ── Send reply (split into chunks if > 2000 chars) ──
+  const chunks = splitMessage(responseText);
+  let botReply;
+  let lastChunkReply;
+  for (let i = 0; i < chunks.length; i++) {
+    const isLast = i === chunks.length - 1;
+    const replyOptions = buildReply(chunks[i], isLast && shouldOfferTicket);
+    if (i === 0) {
+      botReply = await message.reply(replyOptions);
+      lastChunkReply = botReply;
+    } else {
+      lastChunkReply = await message.channel.send(replyOptions);
+    }
+  }
 
-  // ── Store pending ticket context ──
-  if (shouldOfferTicket && botReply) {
-    const ticketKey = `${userId}-${botReply.id}`;
+  // ── Store pending ticket context (keyed to last chunk so button works) ──
+  if (shouldOfferTicket && lastChunkReply) {
+    const ticketKey = `${userId}-${lastChunkReply.id}`;
     pendingTickets.set(ticketKey, {
       query: queryText,
       response: responseText,
@@ -811,9 +822,7 @@ function extractInfoFromConversation(text) {
 }
 
 function buildReply(responseText, includeTicketButton) {
-  const content = responseText.length > 2000
-    ? responseText.slice(0, 1997) + '...'
-    : responseText;
+  const content = responseText;
 
   if (!includeTicketButton) {
     return { content };
