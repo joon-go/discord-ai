@@ -260,6 +260,13 @@ export async function handleMessage(message) {
 
   // ── Send reply (split into chunks if > 2000 chars) ──
   const chunks = splitMessage(responseText);
+  if (chunks.length === 0) {
+    chunks.push(
+      shouldOfferTicket
+        ? 'I can help with that — use the button below to create a support ticket.'
+        : 'Sorry, I couldn't generate a response. Please try again.'
+    );
+  }
   let botReply;
   let lastChunkReply;
   for (let i = 0; i < chunks.length; i++) {
