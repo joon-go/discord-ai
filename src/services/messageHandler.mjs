@@ -264,7 +264,7 @@ export async function handleMessage(message) {
     chunks.push(
       shouldOfferTicket
         ? 'I can help with that — use the button below to create a support ticket.'
-        : 'Sorry, I couldn't generate a response. Please try again.'
+        : "Sorry, I couldn't generate a response. Please try again."
     );
   }
   let botReply;
