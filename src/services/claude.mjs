@@ -90,8 +90,7 @@ export async function generateResponse(userMessage, kbContext = '', conversation
     userContent.push(img);
   }
 
-  const namePrefix = displayName ? `[Discord user: ${displayName}] ` : '';
-  userContent.push({ type: 'text', text: `${contextBlock}${namePrefix}User question: ${userMessage}` });
+  userContent.push({ type: 'text', text: `${contextBlock}User question: ${userMessage}` });
 
   const messages = [
     ...conversationHistory,
