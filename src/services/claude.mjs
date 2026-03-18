@@ -18,8 +18,8 @@ Be clear and friendly without being chatty. Answer directly, skip filler phrases
 Be thorough and conversational. Explain the why behind your answers, provide relevant context, and use examples where helpful. You can be warm and friendly. Longer answers are fine when the question warrants it.`,
 };
 
-const toneKey = (process.env.BOT_TONE || 'balanced').toLowerCase();
-const TONE_BLOCK = TONE_PROFILES[toneKey] || TONE_PROFILES.balanced;
+const toneKey = (process.env.BOT_TONE || 'concise').toLowerCase();
+const TONE_BLOCK = TONE_PROFILES[toneKey] || TONE_PROFILES.concise;
 if (!TONE_PROFILES[toneKey]) {
   console.warn(`[claude] Unknown BOT_TONE "${process.env.BOT_TONE}", falling back to "balanced"`);
 }
