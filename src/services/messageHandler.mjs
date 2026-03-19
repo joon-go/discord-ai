@@ -319,10 +319,16 @@ export async function handleMessage(message) {
 
   // ── Update history (skip for mention-triggered threads — thread context is fetched live) ──
   if (!isMentionTriggeredThread) {
+    // Strip references block and greeting before storing — they're display-only
+    // and would cause duplicate references/greetings in future context
+    const historyResponse = responseText
+      .replace(/\n\n📚 \*\*References:\*\*[\s\S]*$/, '')
+      .replace(/^👋.*?---\n\n/s, '')
+      .trim();
     const updatedHistory = [
       ...history,
       { role: 'user', content: queryText },
-      { role: 'assistant', content: responseText },
+      { role: 'assistant', content: historyResponse },
     ].slice(-MAX_HISTORY * 2);
     conversationHistory.set(userId, updatedHistory);
   }
