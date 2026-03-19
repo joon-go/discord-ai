@@ -102,8 +102,13 @@ export async function searchIssues(query, { daysBack = 30, limit = 10 } = {}) {
  */
 export async function getIssueByNumber(ticketNumber) {
   try {
+    const normalizedTicketNumber = String(ticketNumber).trim();
+    if (!/^\d+$/.test(normalizedTicketNumber)) {
+      return null;
+    }
+
     // Pylon supports GET /issues/{number} directly — no pagination needed
-    const data = await pylonRequest(`/issues/${ticketNumber}`);
+    const data = await pylonRequest(`/issues/${normalizedTicketNumber}`);
     const issue = data?.data;
     if (!issue) return null;
 
