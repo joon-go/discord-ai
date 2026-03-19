@@ -112,8 +112,14 @@ export async function handleMessage(message) {
 
   // ── Check if this message is in an active ticket verification DM ──
   const verifySession = ticketVerificationSessions.get(userId);
-  if (verifySession && !message.guild) {
-    await handleTicketVerification(message, verifySession, text);
+  if (verifySession) {
+    if (!message.guild) {
+      // DM — process verification
+      await handleTicketVerification(message, verifySession, text);
+    } else {
+      // Channel — remind user to respond in DM, don't process as Q&A
+      await message.reply(`I'm waiting for your response in our DM conversation! Please check your direct messages to continue. 📬`);
+    }
     return;
   }
 
