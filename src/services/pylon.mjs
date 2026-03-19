@@ -93,6 +93,96 @@ export async function searchIssues(query, { daysBack = 30, limit = 10 } = {}) {
   }
 }
 
+// ─── Get Issue By Number ─────────────────────────────────────────────
+/**
+ * Fetch a single Pylon issue by its numeric ticket number.
+ *
+ * @param {number|string} ticketNumber - Numeric Pylon issue number (e.g. 1234)
+ * @returns {Promise<{ number, title, state, url, createdAt, updatedAt } | null>}
+ */
+export async function getIssueByNumber(ticketNumber) {
+  try {
+    const normalizedTicketNumber = String(ticketNumber).trim();
+    if (!/^\d+$/.test(normalizedTicketNumber)) {
+      return null;
+    }
+
+    // Pylon supports GET /issues/{number} directly — no pagination needed
+    const data = await pylonRequest(`/issues/${normalizedTicketNumber}`);
+    const issue = data?.data;
+    if (!issue) return null;
+
+    return {
+      id: issue.id,
+      number: issue.number,
+      title: issue.title || `Ticket #${issue.number}`,
+      state: issue.state || 'unknown',
+      url: issue.link || `https://app.usepylon.com/issues?issueNumber=${issue.number}`,
+      assigneeId: issue.assignee?.id || null,
+      assigneeEmail: issue.assignee?.email || null,
+      requesterName: issue.requester?.name || null,
+      requesterEmail: issue.requester?.email || null,
+      createdAt: issue.created_at || null,
+      updatedAt: issue.updated_at || null,
+    };
+  } catch (err) {
+    logger.error('Failed to fetch Pylon issue by number', { ticketNumber, error: err.message });
+    return null;
+  }
+}
+
+// ─── Notify Assignee via Internal Note ───────────────────────────────
+/**
+ * Posts an internal note on a Pylon issue (not visible to customer) and
+ * adds the assignee as a follower to trigger a notification.
+ *
+ * @param {string} issueId - Pylon issue UUID
+ * @param {string|null} assigneeId - Pylon user ID of the assignee (for follower ping)
+ * @param {string} discordUsername - Discord username of the customer asking
+ * @param {number} ticketNumber - Ticket number for log context
+ * @returns {Promise<boolean>} true if note was posted successfully
+ */
+export async function notifyAssigneeOnTicket(issueId, assigneeId, discordUsername, ticketNumber, customerMessage = null) {
+  try {
+    // Get threads to find the internal thread_id
+    const threadsData = await pylonRequest(`/issues/${issueId}/threads`);
+    const threads = threadsData?.data || [];
+    const internalThread = threads.find(t => t.source === 'internal' || t.name?.toLowerCase().includes('internal')) || threads[0];
+
+    if (!internalThread) {
+      logger.warn('No thread found for Pylon issue, cannot post note', { issueId, ticketNumber });
+      return false;
+    }
+
+    const messageSection = customerMessage
+      ? `<p><strong>Customer message:</strong></p><blockquote>${escapeHtml(customerMessage)}</blockquote>`
+      : '';
+
+    const noteHtml = `<p><strong>📣 Discord Status Request</strong></p>
+<p>Customer <strong>${escapeHtml(discordUsername)}</strong> is asking for a status update on this ticket via Discord. Please respond to the customer as soon as possible.</p>
+${messageSection}`;
+
+    await pylonRequest(`/issues/${issueId}/note`, 'POST', {
+      body_html: noteHtml,
+      thread_id: internalThread.id,
+    });
+
+    // Add assignee as follower to trigger notification
+    if (assigneeId) {
+      await pylonRequest(`/issues/${issueId}/followers`, 'POST', {
+        user_ids: [assigneeId],
+        operation: 'add',
+      });
+    }
+
+    logger.info('Assignee notified via internal note', { issueId, ticketNumber, assigneeId, discordUsername });
+    return true;
+  } catch (err) {
+    logger.error('Failed to notify assignee on ticket', { issueId, ticketNumber, error: err.message });
+    return false;
+  }
+}
+
 // ─── Get Recent Issues ───────────────────────────────────────────────
 /**
  * Fetch recent issues (useful for context / trending topics).

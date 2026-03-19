@@ -8,7 +8,7 @@ import {
 } from 'discord.js';
 import { generateResponse } from './claude.mjs';
 import { queryKnowledgeBase } from './rag.mjs';
-import { searchIssues, createIssue, buildTicketHtml, isPylonConfigured, searchKBArticles } from './pylon.mjs';
+import { searchIssues, createIssue, buildTicketHtml, isPylonConfigured, searchKBArticles, getIssueByNumber, notifyAssigneeOnTicket } from './pylon.mjs';
 import { getStatusContext } from './status.mjs';
 import { shouldRespond } from './intentClassifier.mjs';
 import { logger } from '../utils/logger.mjs';
@@ -51,6 +51,12 @@ const pendingTickets = new Map();
 
 const ticketSessions = new Map();  // threadId -> session
 const SESSION_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
+
+// ─── Ticket Verification Sessions (DM flow for checking on existing tickets) ───
+// Key: userId -> { ticketNumber, issue, state: 'awaiting_identity' | 'awaiting_message' }
+const ticketVerificationSessions = new Map();
+// Store timeout IDs for verification sessions to allow cancellation
+const ticketVerificationTimeouts = new Map();
 
 // ─── Field Definitions ──────────────────────────────────────────────
 const REQUIRED_FIELDS = [
@@ -104,6 +110,13 @@ export async function handleMessage(message) {
 
   if (text.length < 2 && !hasImages) return;
 
+  // ── Check if this message is in an active ticket verification DM ──
+  const verifySession = ticketVerificationSessions.get(userId);
+  if (verifySession && !message.guild) {
+    await handleTicketVerification(message, verifySession, text);
+    return;
+  }
+
   // ── Check if this message is in an active ticket collection DM ──
   const session = ticketSessions.get(userId);
   if (session && !message.guild) {
@@ -154,6 +167,65 @@ export async function handleMessage(message) {
 
   // ── Check if user wants a ticket/agent ──
   const userWantsTicket = containsTicketIntent(queryText);
+
+  // ── Check if previous assistant turn asked for ticket number ──
+  const previousHistory = conversationHistory.get(userId) || [];
+  const lastAssistantMessage = previousHistory.length > 0 && previousHistory[previousHistory.length - 1]?.role === 'assistant'
+    ? previousHistory[previousHistory.length - 1].content.toLowerCase()
+    : '';
+  const assistantAskedForTicket = lastAssistantMessage.includes('ticket number') ||
+    lastAssistantMessage.includes('ticket #') ||
+    lastAssistantMessage.includes('what is the ticket number') ||
+    lastAssistantMessage.includes('which ticket');
+
+  // ── Check if user is asking about an existing ticket status ──
+  const ticketStatusNumber = extractTicketNumber(queryText, assistantAskedForTicket);
+  if (ticketStatusNumber && isPylonConfigured()) {
+    await message.channel.sendTyping();
+    const issue = await getIssueByNumber(ticketStatusNumber);
+
+    if (!issue) {
+      // Non-confirming — don't reveal whether the ticket exists
+      await message.reply(
+        `I wasn't able to locate that ticket. Please double-check the number, or open a new support ticket if you need help.`
+      );
+      return;
+    }
+
+    // Ticket exists — move verification and message to a private DM
+    try {
+      const dmChannel = await message.author.createDM();
+
+      // Cancel any existing expiry timer for this user
+      const existingTimeout = ticketVerificationTimeouts.get(userId);
+      if (existingTimeout) {
+        clearTimeout(existingTimeout);
+      }
+
+      ticketVerificationSessions.set(userId, {
+        ticketNumber: issue.number,
+        issue,
+        state: 'awaiting_identity',
+        username,
+      });
+
+      // Auto-expire session after 15 minutes and store the timeout ID
+      const timeoutId = setTimeout(() => {
+        ticketVerificationSessions.delete(userId);
+        ticketVerificationTimeouts.delete(userId);
+      }, SESSION_TIMEOUT_MS);
+      ticketVerificationTimeouts.set(userId, timeoutId);
+
+      await dmChannel.send(
+        `Hi! I found a ticket matching that number. To verify you're the owner, ` +
+        `please provide the **email address or full name** associated with the ticket.`
+      );
+      await message.reply(`I've sent you a DM to verify your identity — check your direct messages! 📬`);
+    } catch {
+      await message.reply(`I couldn't send you a DM. Please make sure your DMs are open for this server (Server Settings → Privacy Settings → Direct Messages).`);
+    }
+    return;
+  }
 
   // ── Parallel retrieval (always fetch — KB may have routing info for non-support inquiries) ──
   const [docResult, kbResult, pylonResult] = await Promise.all([
@@ -298,10 +370,16 @@ export async function handleMessage(message) {
 
   // ── Update history (skip for mention-triggered threads — thread context is fetched live) ──
   if (!isMentionTriggeredThread) {
+    // Strip references block and greeting before storing — they're display-only
+    // and would cause duplicate references/greetings in future context
+    const historyResponse = responseText
+      .replace(/\n\n📚 \*\*References:\*\*[\s\S]*$/, '')
+      .replace(/^👋.*?---\n\n/s, '')
+      .trim();
     const updatedHistory = [
       ...history,
       { role: 'user', content: queryText },
-      { role: 'assistant', content: responseText },
+      { role: 'assistant', content: historyResponse },
     ].slice(-MAX_HISTORY * 2);
     conversationHistory.set(userId, updatedHistory);
   }
@@ -470,6 +548,81 @@ export async function handleTicketSelect(interaction) {
   } else {
     session.currentField = nextField.key;
     await sendFieldPrompt(interaction.channel, nextField);
+  }
+}
+
+// ═════════════════════════════════════════════════════════════════════
+//  HANDLE MESSAGES IN DM (ticket verification flow)
+// ═════════════════════════════════════════════════════════════════════
+
+async function handleTicketVerification(message, session, text) {
+  const userId = message.author.id;
+  const lower = text.toLowerCase().trim();
+
+  if (lower === 'cancel') {
+    ticketVerificationSessions.delete(userId);
+    const timeoutId = ticketVerificationTimeouts.get(userId);
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+      ticketVerificationTimeouts.delete(userId);
+    }
+    await message.reply('🚫 Ticket verification cancelled.');
+    return;
+  }
+
+  if (session.state === 'awaiting_identity') {
+    const { issue } = session;
+
+    // Verify against requesterEmail OR requesterName (full name) — case-insensitive
+    const inputClean = text.trim().toLowerCase();
+    const emailMatch = issue.requesterEmail && issue.requesterEmail.toLowerCase() === inputClean;
+    const nameMatch = issue.requesterName && issue.requesterName.toLowerCase() === inputClean;
+
+    if (!emailMatch && !nameMatch) {
+      // Non-confirming — don't reveal ticket details
+      ticketVerificationSessions.delete(userId);
+      const timeoutId = ticketVerificationTimeouts.get(userId);
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+        ticketVerificationTimeouts.delete(userId);
+      }
+      await message.reply(
+        `I wasn't able to verify your identity for that ticket. ` +
+        `Please check your details or open a new support ticket if you need assistance.`
+      );
+      return;
+    }
+
+    // Identity verified — ask for message to pass along
+    session.state = 'awaiting_message';
+    ticketVerificationSessions.set(userId, session);
+    await message.reply(
+      `✅ Identity verified! What message would you like me to pass along to your support engineer?`
+    );
+    return;
+  }
+
+  if (session.state === 'awaiting_message') {
+    const { issue, username } = session;
+    ticketVerificationSessions.delete(userId);
+    const timeoutId = ticketVerificationTimeouts.get(userId);
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+      ticketVerificationTimeouts.delete(userId);
+    }
+
+    // Post internal note and notify assignee
+    try {
+      await notifyAssigneeOnTicket(issue.id, issue.assigneeId, username, issue.number, text.trim());
+      await message.reply(
+        `Done! I've notified your support engineer and passed along your message. ` +
+        `They'll follow up with you as soon as possible. 🙏`
+      );
+    } catch (err) {
+      logger.error('notifyAssigneeOnTicket failed in verification flow', { error: err.message });
+      await message.reply(`Something went wrong notifying the support team. Please try again or reach out directly.`);
+    }
+    return;
   }
 }
 
@@ -882,6 +1035,37 @@ function containsNonSupportRouting(text) {
     'coderabbit.ai/careers',
   ];
   return nonSupportContacts.some(contact => lower.includes(contact));
+}
+
+/**
+ * Extract a numeric Pylon ticket number if the user is asking about an existing ticket.
+ * Returns the ticket number string if found, or null if not a ticket status inquiry.
+ * @param {string} text - The message text to parse
+ * @param {boolean} allowBareNumber - If true, accept standalone numbers without keywords
+ */
+function extractTicketNumber(text, allowBareNumber = false) {
+  const trimmed = text.trim();
+  const lower = trimmed.toLowerCase();
+
+  // Check if this is a bare numeric reply (e.g., "1234" or "#1234")
+  const bareNumberMatch = trimmed.match(/^#?(\d{3,})$/);
+  if (bareNumberMatch && allowBareNumber) {
+    return bareNumberMatch[1];
+  }
+
+  // Must contain a signal that they're referencing an existing ticket
+  const existingTicketSignals = [
+    'ticket', 'issue', 'case', 'support request',
+    'status', 'update', 'follow up', 'follow-up', 'check on',
+    'my ticket', 'my issue', 'opened a ticket', 'submitted a ticket',
+    'ticket number', 'ticket #', 'issue #',
+  ];
+  const hasSignal = existingTicketSignals.some(s => lower.includes(s));
+  if (!hasSignal) return null;
+
+  // Extract a standalone numeric sequence (3+ digits) or `#number` — Pylon issue numbers
+  const match = text.match(/(?:#|\b)(\d{3,})\b/);
+  return match ? match[1] : null;
 }
 
 /**
