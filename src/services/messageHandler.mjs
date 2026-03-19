@@ -8,7 +8,7 @@ import {
 } from 'discord.js';
 import { generateResponse } from './claude.mjs';
 import { queryKnowledgeBase } from './rag.mjs';
-import { searchIssues, createIssue, buildTicketHtml, isPylonConfigured, searchKBArticles, getIssueByNumber } from './pylon.mjs';
+import { searchIssues, createIssue, buildTicketHtml, isPylonConfigured, searchKBArticles, getIssueByNumber, notifyAssigneeOnTicket } from './pylon.mjs';
 import { getStatusContext } from './status.mjs';
 import { shouldRespond } from './intentClassifier.mjs';
 import { logger } from '../utils/logger.mjs';
@@ -161,14 +161,13 @@ export async function handleMessage(message) {
     await message.channel.sendTyping();
     const issue = await getIssueByNumber(ticketStatusNumber);
     if (issue) {
-      const stateEmoji = issue.state === 'open' ? '🟡' : issue.state === 'closed' ? '✅' : '⚪';
-      const created = issue.createdAt ? new Date(issue.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'unknown';
-      const updated = issue.updatedAt ? new Date(issue.updatedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'unknown';
+      // Post internal note and notify assignee — fire and forget (don't block reply)
+      notifyAssigneeOnTicket(issue.id, issue.assigneeId, username, issue.number).catch(err =>
+        logger.error('notifyAssigneeOnTicket failed', { error: err.message })
+      );
       await message.reply(
-        `${stateEmoji} **Ticket #${issue.number}** — ${issue.title}\n` +
-        `**Status:** ${issue.state}\n` +
-        `**Opened:** ${created} · **Last updated:** ${updated}\n` +
-        `**Link:** ${issue.url}`
+        `Got it! I've flagged ticket **#${issue.number}** and notified the team to follow up with you as soon as possible. ` +
+        `You should hear back shortly — thanks for your patience! 🙏`
       );
     } else {
       await message.reply(`I couldn't find ticket #${ticketStatusNumber}. Please double-check the number — Pylon ticket numbers are all numeric (e.g. \`1234\`).`);
