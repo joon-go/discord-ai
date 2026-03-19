@@ -93,6 +93,42 @@ export async function searchIssues(query, { daysBack = 30, limit = 10 } = {}) {
   }
 }
 
+// ─── Get Issue By Number ─────────────────────────────────────────────
+/**
+ * Fetch a single Pylon issue by its numeric ticket number.
+ *
+ * @param {number|string} ticketNumber - Numeric Pylon issue number (e.g. 1234)
+ * @returns {Promise<{ number, title, state, url, createdAt, updatedAt } | null>}
+ */
+export async function getIssueByNumber(ticketNumber) {
+  try {
+    // Search a wide window (365 days) to cover old tickets
+    const now = new Date();
+    const startTime = new Date(now - 365 * 24 * 60 * 60 * 1000);
+    const params = new URLSearchParams({
+      start_time: startTime.toISOString(),
+      end_time: now.toISOString(),
+    });
+    const data = await pylonRequest(`/issues?${params}`);
+    if (!data?.data) return null;
+
+    const issue = data.data.find(i => String(i.number) === String(ticketNumber));
+    if (!issue) return null;
+
+    return {
+      number: issue.number,
+      title: issue.title || `Ticket #${issue.number}`,
+      state: issue.state || 'unknown',
+      url: issue.link || `https://app.usepylon.com/issues?issueNumber=${issue.number}`,
+      createdAt: issue.created_at || null,
+      updatedAt: issue.updated_at || null,
+    };
+  } catch (err) {
+    logger.error('Failed to fetch Pylon issue by number', { ticketNumber, error: err.message });
+    return null;
+  }
+}
+
 // ─── Get Recent Issues ───────────────────────────────────────────────
 /**
  * Fetch recent issues (useful for context / trending topics).

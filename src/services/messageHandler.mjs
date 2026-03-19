@@ -8,7 +8,7 @@ import {
 } from 'discord.js';
 import { generateResponse } from './claude.mjs';
 import { queryKnowledgeBase } from './rag.mjs';
-import { searchIssues, createIssue, buildTicketHtml, isPylonConfigured, searchKBArticles } from './pylon.mjs';
+import { searchIssues, createIssue, buildTicketHtml, isPylonConfigured, searchKBArticles, getIssueByNumber } from './pylon.mjs';
 import { getStatusContext } from './status.mjs';
 import { shouldRespond } from './intentClassifier.mjs';
 import { logger } from '../utils/logger.mjs';
@@ -155,6 +155,27 @@ export async function handleMessage(message) {
   // ── Check if user wants a ticket/agent ──
   const userWantsTicket = containsTicketIntent(queryText);
 
+  // ── Check if user is asking about an existing ticket status ──
+  const ticketStatusNumber = extractTicketNumber(queryText);
+  if (ticketStatusNumber && isPylonConfigured()) {
+    await message.channel.sendTyping();
+    const issue = await getIssueByNumber(ticketStatusNumber);
+    if (issue) {
+      const stateEmoji = issue.state === 'open' ? '🟡' : issue.state === 'closed' ? '✅' : '⚪';
+      const created = issue.createdAt ? new Date(issue.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'unknown';
+      const updated = issue.updatedAt ? new Date(issue.updatedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'unknown';
+      await message.reply(
+        `${stateEmoji} **Ticket #${issue.number}** — ${issue.title}\n` +
+        `**Status:** ${issue.state}\n` +
+        `**Opened:** ${created} · **Last updated:** ${updated}\n` +
+        `**Link:** ${issue.url}`
+      );
+    } else {
+      await message.reply(`I couldn't find ticket #${ticketStatusNumber}. Please double-check the number — Pylon ticket numbers are all numeric (e.g. \`1234\`).`);
+    }
+    return;
+  }
+
   // ── Parallel retrieval (always fetch — KB may have routing info for non-support inquiries) ──
   const [docResult, kbResult, pylonResult] = await Promise.all([
     queryKnowledgeBase(queryText),
@@ -253,6 +274,7 @@ export async function handleMessage(message) {
       + `Here's how I can help:\n`
       + `• **Ask me anything** about CodeRabbit — setup, configuration, reviews, billing, CLI, and more\n`
       + `• **Create a support ticket** — just ask and I'll guide you through it\n`
+      + `• **Check ticket status** — share your ticket number and I'll look it up\n`
       + `• **Tag me in threads** — mention \`@AI Bunny\` and I'll read the thread context and jump in\n\n`
       + `---\n\n`;
     responseText = greeting + responseText;
@@ -882,6 +904,28 @@ function containsNonSupportRouting(text) {
     'coderabbit.ai/careers',
   ];
   return nonSupportContacts.some(contact => lower.includes(contact));
+}
+
+/**
+ * Extract a numeric Pylon ticket number if the user is asking about an existing ticket.
+ * Returns the ticket number string if found, or null if not a ticket status inquiry.
+ */
+function extractTicketNumber(text) {
+  const lower = text.toLowerCase();
+
+  // Must contain a signal that they're referencing an existing ticket
+  const existingTicketSignals = [
+    'ticket', 'issue', 'case', 'support request',
+    'status', 'update', 'follow up', 'follow-up', 'check on',
+    'my ticket', 'my issue', 'opened a ticket', 'submitted a ticket',
+    'ticket number', 'ticket #', 'issue #', '#',
+  ];
+  const hasSignal = existingTicketSignals.some(s => lower.includes(s));
+  if (!hasSignal) return null;
+
+  // Extract a standalone numeric sequence (3-6 digits) — Pylon issue numbers
+  const match = text.match(/\b(\d{3,6})\b/);
+  return match ? match[1] : null;
 }
 
 /**
