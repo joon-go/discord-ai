@@ -148,7 +148,7 @@ export async function notifyAssigneeOnTicket(issueId, assigneeId, discordUsernam
     }
 
     const noteHtml = `<p><strong>📣 Discord Status Request</strong></p>
-<p>Customer <strong>${discordUsername}</strong> is asking for a status update on this ticket via Discord. Please respond to the customer as soon as possible.</p>`;
+<p>Customer <strong>${escapeHtml(discordUsername)}</strong> is asking for a status update on this ticket via Discord. Please respond to the customer as soon as possible.</p>`;
 
     await pylonRequest(`/issues/${issueId}/note`, 'POST', {
       body_html: noteHtml,
