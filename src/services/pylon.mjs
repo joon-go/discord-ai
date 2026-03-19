@@ -102,17 +102,9 @@ export async function searchIssues(query, { daysBack = 30, limit = 10 } = {}) {
  */
 export async function getIssueByNumber(ticketNumber) {
   try {
-    // Search a wide window (365 days) to cover old tickets
-    const now = new Date();
-    const startTime = new Date(now - 365 * 24 * 60 * 60 * 1000);
-    const params = new URLSearchParams({
-      start_time: startTime.toISOString(),
-      end_time: now.toISOString(),
-    });
-    const data = await pylonRequest(`/issues?${params}`);
-    if (!data?.data) return null;
-
-    const issue = data.data.find(i => String(i.number) === String(ticketNumber));
+    // Pylon supports GET /issues/{number} directly — no pagination needed
+    const data = await pylonRequest(`/issues/${ticketNumber}`);
+    const issue = data?.data;
     if (!issue) return null;
 
     return {
