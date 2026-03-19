@@ -115,6 +115,8 @@ export async function getIssueByNumber(ticketNumber) {
       url: issue.link || `https://app.usepylon.com/issues?issueNumber=${issue.number}`,
       assigneeId: issue.assignee?.id || null,
       assigneeEmail: issue.assignee?.email || null,
+      requesterName: issue.requester?.name || null,
+      requesterEmail: issue.requester?.email || null,
       createdAt: issue.created_at || null,
       updatedAt: issue.updated_at || null,
     };

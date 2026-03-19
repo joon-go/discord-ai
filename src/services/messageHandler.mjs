@@ -160,17 +160,29 @@ export async function handleMessage(message) {
   if (ticketStatusNumber && isPylonConfigured()) {
     await message.channel.sendTyping();
     const issue = await getIssueByNumber(ticketStatusNumber);
-    if (issue) {
+
+    // Verify ownership: requesterName is set to the Discord username at ticket creation.
+    // Do NOT reveal whether the ticket exists if ownership cannot be confirmed —
+    // this prevents ticket enumeration and unauthorized mutation.
+    const ownerMatches = issue &&
+      issue.requesterName &&
+      issue.requesterName.toLowerCase() === username.toLowerCase();
+
+    if (ownerMatches) {
       // Post internal note and notify assignee — fire and forget (don't block reply)
       notifyAssigneeOnTicket(issue.id, issue.assigneeId, username, issue.number).catch(err =>
         logger.error('notifyAssigneeOnTicket failed', { error: err.message })
       );
       await message.reply(
-        `Got it! I've flagged ticket **#${issue.number}** and notified the team to follow up with you as soon as possible. ` +
+        `Got it! I've flagged your ticket and notified the team to follow up with you as soon as possible. ` +
         `You should hear back shortly — thanks for your patience! 🙏`
       );
     } else {
-      await message.reply(`I couldn't find ticket #${ticketStatusNumber}. Please double-check the number — Pylon ticket numbers are all numeric (e.g. \`1234\`).`);
+      // Generic non-confirming response — do not confirm or deny whether ticket exists
+      await message.reply(
+        `I wasn't able to verify ownership of that ticket. Please check that you're using the correct ticket number, ` +
+        `or reach out to our support team directly for an update.`
+      );
     }
     return;
   }
@@ -273,7 +285,6 @@ export async function handleMessage(message) {
       + `Here's how I can help:\n`
       + `• **Ask me anything** about CodeRabbit — setup, configuration, reviews, billing, CLI, and more\n`
       + `• **Create a support ticket** — just ask and I'll guide you through it\n`
-      + `• **Check ticket status** — share your ticket number and I'll look it up\n`
       + `• **Tag me in threads** — mention \`@AI Bunny\` and I'll read the thread context and jump in\n\n`
       + `---\n\n`;
     responseText = greeting + responseText;
