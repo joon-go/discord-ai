@@ -110,6 +110,12 @@ export async function handleMessage(message) {
 
   if (text.length < 2 && !hasImages) return;
 
+  // ── Cooldown (applied early to catch all paths including session flows) ──
+  // Must be before session checks so duplicate Discord events don't bypass it.
+  const lastMsg = cooldowns.get(userId);
+  if (lastMsg && Date.now() - lastMsg < COOLDOWN_MS) return;
+  cooldowns.set(userId, Date.now());
+
   // ── Check if this message is in an active ticket verification DM ──
   const verifySession = ticketVerificationSessions.get(userId);
   if (verifySession) {
@@ -132,11 +138,6 @@ export async function handleMessage(message) {
 
   // ── Normal Q&A message handling ──
   if (text.length < 3 && !hasImages) return;
-
-  // Cooldown
-  const lastMsg = cooldowns.get(userId);
-  if (lastMsg && Date.now() - lastMsg < COOLDOWN_MS) return;
-  cooldowns.set(userId, Date.now());
 
   // ── Intent classification gate (skip for DMs and @mentions) ──
   const isDM = !message.guild;
