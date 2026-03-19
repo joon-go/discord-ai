@@ -928,8 +928,8 @@ function extractTicketNumber(text) {
   const hasSignal = existingTicketSignals.some(s => lower.includes(s));
   if (!hasSignal) return null;
 
-  // Extract a standalone numeric sequence (3-6 digits) or `#number` — Pylon issue numbers
-  const match = text.match(/(?:#|\b)(\d{3,6})\b/);
+  // Extract a standalone numeric sequence (3+ digits) or `#number` — Pylon issue numbers
+  const match = text.match(/(?:#|\b)(\d{3,})\b/);
   return match ? match[1] : null;
 }
 
