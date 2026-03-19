@@ -55,6 +55,8 @@ const SESSION_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
 // ─── Ticket Verification Sessions (DM flow for checking on existing tickets) ───
 // Key: userId -> { ticketNumber, issue, state: 'awaiting_identity' | 'awaiting_message' }
 const ticketVerificationSessions = new Map();
+// Store timeout IDs for verification sessions to allow cancellation
+const ticketVerificationTimeouts = new Map();
 
 // ─── Field Definitions ──────────────────────────────────────────────
 const REQUIRED_FIELDS = [
@@ -166,8 +168,18 @@ export async function handleMessage(message) {
   // ── Check if user wants a ticket/agent ──
   const userWantsTicket = containsTicketIntent(queryText);
 
+  // ── Check if previous assistant turn asked for ticket number ──
+  const previousHistory = conversationHistory.get(userId) || [];
+  const lastAssistantMessage = previousHistory.length > 0 && previousHistory[previousHistory.length - 1]?.role === 'assistant'
+    ? previousHistory[previousHistory.length - 1].content.toLowerCase()
+    : '';
+  const assistantAskedForTicket = lastAssistantMessage.includes('ticket number') ||
+    lastAssistantMessage.includes('ticket #') ||
+    lastAssistantMessage.includes('what is the ticket number') ||
+    lastAssistantMessage.includes('which ticket');
+
   // ── Check if user is asking about an existing ticket status ──
-  const ticketStatusNumber = extractTicketNumber(queryText);
+  const ticketStatusNumber = extractTicketNumber(queryText, assistantAskedForTicket);
   if (ticketStatusNumber && isPylonConfigured()) {
     await message.channel.sendTyping();
     const issue = await getIssueByNumber(ticketStatusNumber);
@@ -183,14 +195,26 @@ export async function handleMessage(message) {
     // Ticket exists — move verification and message to a private DM
     try {
       const dmChannel = await message.author.createDM();
+
+      // Cancel any existing expiry timer for this user
+      const existingTimeout = ticketVerificationTimeouts.get(userId);
+      if (existingTimeout) {
+        clearTimeout(existingTimeout);
+      }
+
       ticketVerificationSessions.set(userId, {
         ticketNumber: issue.number,
         issue,
         state: 'awaiting_identity',
         username,
       });
-      // Auto-expire session after 15 minutes
-      setTimeout(() => ticketVerificationSessions.delete(userId), SESSION_TIMEOUT_MS);
+
+      // Auto-expire session after 15 minutes and store the timeout ID
+      const timeoutId = setTimeout(() => {
+        ticketVerificationSessions.delete(userId);
+        ticketVerificationTimeouts.delete(userId);
+      }, SESSION_TIMEOUT_MS);
+      ticketVerificationTimeouts.set(userId, timeoutId);
 
       await dmChannel.send(
         `Hi! I found a ticket matching that number. To verify you're the owner, ` +
@@ -537,6 +561,11 @@ async function handleTicketVerification(message, session, text) {
 
   if (lower === 'cancel') {
     ticketVerificationSessions.delete(userId);
+    const timeoutId = ticketVerificationTimeouts.get(userId);
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+      ticketVerificationTimeouts.delete(userId);
+    }
     await message.reply('🚫 Ticket verification cancelled.');
     return;
   }
@@ -552,6 +581,11 @@ async function handleTicketVerification(message, session, text) {
     if (!emailMatch && !nameMatch) {
       // Non-confirming — don't reveal ticket details
       ticketVerificationSessions.delete(userId);
+      const timeoutId = ticketVerificationTimeouts.get(userId);
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+        ticketVerificationTimeouts.delete(userId);
+      }
       await message.reply(
         `I wasn't able to verify your identity for that ticket. ` +
         `Please check your details or open a new support ticket if you need assistance.`
@@ -571,6 +605,11 @@ async function handleTicketVerification(message, session, text) {
   if (session.state === 'awaiting_message') {
     const { issue, username } = session;
     ticketVerificationSessions.delete(userId);
+    const timeoutId = ticketVerificationTimeouts.get(userId);
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+      ticketVerificationTimeouts.delete(userId);
+    }
 
     // Post internal note and notify assignee
     try {
@@ -1001,9 +1040,18 @@ function containsNonSupportRouting(text) {
 /**
  * Extract a numeric Pylon ticket number if the user is asking about an existing ticket.
  * Returns the ticket number string if found, or null if not a ticket status inquiry.
+ * @param {string} text - The message text to parse
+ * @param {boolean} allowBareNumber - If true, accept standalone numbers without keywords
  */
-function extractTicketNumber(text) {
-  const lower = text.toLowerCase();
+function extractTicketNumber(text, allowBareNumber = false) {
+  const trimmed = text.trim();
+  const lower = trimmed.toLowerCase();
+
+  // Check if this is a bare numeric reply (e.g., "1234" or "#1234")
+  const bareNumberMatch = trimmed.match(/^#?(\d{3,})$/);
+  if (bareNumberMatch && allowBareNumber) {
+    return bareNumberMatch[1];
+  }
 
   // Must contain a signal that they're referencing an existing ticket
   const existingTicketSignals = [
