@@ -166,7 +166,9 @@ export async function handleMessage(message) {
   logger.info('Processing query', { userId, username, query: queryText.slice(0, 100), images: hasImages });
 
   // ── Check if user wants a ticket/agent ──
-  const userWantsTicket = containsTicketIntent(queryText);
+  // Don't offer to create a new ticket if the user is referencing an existing one
+  const userReferencesExistingTicket = referencesExistingTicket(queryText);
+  const userWantsTicket = !userReferencesExistingTicket && containsTicketIntent(queryText);
 
   // ── Check if previous assistant turn asked for ticket number ──
   const previousHistory = conversationHistory.get(userId) || [];
@@ -289,7 +291,9 @@ export async function handleMessage(message) {
   // rather than the code inferring it from hasContext (which would falsely trigger
   // tickets for off-topic declines and [NO_REFS] responses).
   const responseRoutedElsewhere = containsNonSupportRouting(responseText);
-  const shouldOfferTicket = isPylonConfigured() && !responseRoutedElsewhere && (
+  // Suppress ticket button when AI is still gathering context ([NO_REFS] = clarifying/off-topic).
+  // The button should only appear when the AI has enough product context to warrant escalation.
+  const shouldOfferTicket = isPylonConfigured() && !responseRoutedElsewhere && !suppressRefs && (
     userWantsTicket || aiWantsTicket || containsEscalationSignal(responseText)
   );
 
@@ -1043,6 +1047,21 @@ function containsNonSupportRouting(text) {
  * @param {string} text - The message text to parse
  * @param {boolean} allowBareNumber - If true, accept standalone numbers without keywords
  */
+/**
+ * Detect if the user is referencing an existing ticket (not trying to create a new one).
+ * Used to suppress the "Create Support Ticket" button when user already has a ticket.
+ */
+function referencesExistingTicket(text) {
+  const lower = text.toLowerCase();
+  const existingTicketPhrases = [
+    'opened a ticket', 'submitted a ticket', 'created a ticket', 'have a ticket',
+    'my ticket', 'ticket number', 'ticket #', 'ticket id', 'existing ticket',
+    'already have a ticket', 'already opened', 'already submitted',
+    'i have an open ticket', 'i have a support ticket',
+  ];
+  return existingTicketPhrases.some(p => lower.includes(p));
+}
+
 function extractTicketNumber(text, allowBareNumber = false) {
   const trimmed = text.trim();
   const lower = trimmed.toLowerCase();
