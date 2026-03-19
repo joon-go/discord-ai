@@ -917,13 +917,13 @@ function extractTicketNumber(text) {
     'ticket', 'issue', 'case', 'support request',
     'status', 'update', 'follow up', 'follow-up', 'check on',
     'my ticket', 'my issue', 'opened a ticket', 'submitted a ticket',
-    'ticket number', 'ticket #', 'issue #', '#',
+    'ticket number', 'ticket #', 'issue #',
   ];
   const hasSignal = existingTicketSignals.some(s => lower.includes(s));
   if (!hasSignal) return null;
 
-  // Extract a standalone numeric sequence (3-6 digits) — Pylon issue numbers
-  const match = text.match(/\b(\d{3,6})\b/);
+  // Extract a standalone numeric sequence (3-6 digits) or `#number` — Pylon issue numbers
+  const match = text.match(/(?:#|\b)(\d{3,6})\b/);
   return match ? match[1] : null;
 }
 
