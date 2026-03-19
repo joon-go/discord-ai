@@ -52,6 +52,10 @@ const pendingTickets = new Map();
 const ticketSessions = new Map();  // threadId -> session
 const SESSION_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
 
+// ─── Ticket Verification Sessions (DM flow for checking on existing tickets) ───
+// Key: userId -> { ticketNumber, issue, state: 'awaiting_identity' | 'awaiting_message' }
+const ticketVerificationSessions = new Map();
+
 // ─── Field Definitions ──────────────────────────────────────────────
 const REQUIRED_FIELDS = [
   {
@@ -103,6 +107,13 @@ export async function handleMessage(message) {
   const hasImages = message.attachments.some(att => att.contentType?.startsWith('image/'));
 
   if (text.length < 2 && !hasImages) return;
+
+  // ── Check if this message is in an active ticket verification DM ──
+  const verifySession = ticketVerificationSessions.get(userId);
+  if (verifySession && !message.guild) {
+    await handleTicketVerification(message, verifySession, text);
+    return;
+  }
 
   // ── Check if this message is in an active ticket collection DM ──
   const session = ticketSessions.get(userId);
@@ -161,28 +172,33 @@ export async function handleMessage(message) {
     await message.channel.sendTyping();
     const issue = await getIssueByNumber(ticketStatusNumber);
 
-    // Verify ownership: requesterName is set to the Discord username at ticket creation.
-    // Do NOT reveal whether the ticket exists if ownership cannot be confirmed —
-    // this prevents ticket enumeration and unauthorized mutation.
-    const ownerMatches = issue &&
-      issue.requesterName &&
-      issue.requesterName.toLowerCase() === username.toLowerCase();
+    if (!issue) {
+      // Non-confirming — don't reveal whether the ticket exists
+      await message.reply(
+        `I wasn't able to locate that ticket. Please double-check the number, or open a new support ticket if you need help.`
+      );
+      return;
+    }
 
-    if (ownerMatches) {
-      // Post internal note and notify assignee — fire and forget (don't block reply)
-      notifyAssigneeOnTicket(issue.id, issue.assigneeId, username, issue.number).catch(err =>
-        logger.error('notifyAssigneeOnTicket failed', { error: err.message })
+    // Ticket exists — move verification and message to a private DM
+    try {
+      const dmChannel = await message.author.createDM();
+      ticketVerificationSessions.set(userId, {
+        ticketNumber: issue.number,
+        issue,
+        state: 'awaiting_identity',
+        username,
+      });
+      // Auto-expire session after 15 minutes
+      setTimeout(() => ticketVerificationSessions.delete(userId), SESSION_TIMEOUT_MS);
+
+      await dmChannel.send(
+        `Hi! I found a ticket matching that number. To verify you're the owner, ` +
+        `please provide the **email address or full name** associated with the ticket.`
       );
-      await message.reply(
-        `Got it! I've flagged your ticket and notified the team to follow up with you as soon as possible. ` +
-        `You should hear back shortly — thanks for your patience! 🙏`
-      );
-    } else {
-      // Generic non-confirming response — do not confirm or deny whether ticket exists
-      await message.reply(
-        `I wasn't able to verify ownership of that ticket. Please check that you're using the correct ticket number, ` +
-        `or reach out to our support team directly for an update.`
-      );
+      await message.reply(`I've sent you a DM to verify your identity — check your direct messages! 📬`);
+    } catch {
+      await message.reply(`I couldn't send you a DM. Please make sure your DMs are open for this server (Server Settings → Privacy Settings → Direct Messages).`);
     }
     return;
   }
@@ -508,6 +524,66 @@ export async function handleTicketSelect(interaction) {
   } else {
     session.currentField = nextField.key;
     await sendFieldPrompt(interaction.channel, nextField);
+  }
+}
+
+// ═════════════════════════════════════════════════════════════════════
+//  HANDLE MESSAGES IN DM (ticket verification flow)
+// ═════════════════════════════════════════════════════════════════════
+
+async function handleTicketVerification(message, session, text) {
+  const userId = message.author.id;
+  const lower = text.toLowerCase().trim();
+
+  if (lower === 'cancel') {
+    ticketVerificationSessions.delete(userId);
+    await message.reply('🚫 Ticket verification cancelled.');
+    return;
+  }
+
+  if (session.state === 'awaiting_identity') {
+    const { issue } = session;
+
+    // Verify against requesterEmail OR requesterName (full name) — case-insensitive
+    const inputClean = text.trim().toLowerCase();
+    const emailMatch = issue.requesterEmail && issue.requesterEmail.toLowerCase() === inputClean;
+    const nameMatch = issue.requesterName && issue.requesterName.toLowerCase() === inputClean;
+
+    if (!emailMatch && !nameMatch) {
+      // Non-confirming — don't reveal ticket details
+      ticketVerificationSessions.delete(userId);
+      await message.reply(
+        `I wasn't able to verify your identity for that ticket. ` +
+        `Please check your details or open a new support ticket if you need assistance.`
+      );
+      return;
+    }
+
+    // Identity verified — ask for message to pass along
+    session.state = 'awaiting_message';
+    ticketVerificationSessions.set(userId, session);
+    await message.reply(
+      `✅ Identity verified! What message would you like me to pass along to your support engineer?`
+    );
+    return;
+  }
+
+  if (session.state === 'awaiting_message') {
+    const { issue, username } = session;
+    ticketVerificationSessions.delete(userId);
+
+    // Post internal note and notify assignee
+    try {
+      await notifyAssigneeOnTicket(issue.id, issue.assigneeId, username, issue.number, text.trim());
+      await message.reply(
+        `Done! I've notified your support engineer and passed along your message. ` +
+        `They'll follow up with you as soon as possible. 🙏`
+      );
+    } catch (err) {
+      logger.error('notifyAssigneeOnTicket failed in verification flow', { error: err.message });
+      await message.reply(`Something went wrong notifying the support team. Please try again or reach out directly.`);
+    }
+    return;
   }
 }
 

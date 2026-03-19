@@ -137,7 +137,7 @@ export async function getIssueByNumber(ticketNumber) {
  * @param {number} ticketNumber - Ticket number for log context
  * @returns {Promise<boolean>} true if note was posted successfully
  */
-export async function notifyAssigneeOnTicket(issueId, assigneeId, discordUsername, ticketNumber) {
+export async function notifyAssigneeOnTicket(issueId, assigneeId, discordUsername, ticketNumber, customerMessage = null) {
   try {
     // Get threads to find the internal thread_id
     const threadsData = await pylonRequest(`/issues/${issueId}/threads`);
@@ -149,8 +149,13 @@ export async function notifyAssigneeOnTicket(issueId, assigneeId, discordUsernam
       return false;
     }
 
+    const messageSection = customerMessage
+      ? `<p><strong>Customer message:</strong></p><blockquote>${escapeHtml(customerMessage)}</blockquote>`
+      : '';
+
     const noteHtml = `<p><strong>📣 Discord Status Request</strong></p>
-<p>Customer <strong>${escapeHtml(discordUsername)}</strong> is asking for a status update on this ticket via Discord. Please respond to the customer as soon as possible.</p>`;
+<p>Customer <strong>${escapeHtml(discordUsername)}</strong> is asking for a status update on this ticket via Discord. Please respond to the customer as soon as possible.</p>
+${messageSection}`;
 
     await pylonRequest(`/issues/${issueId}/note`, 'POST', {
       body_html: noteHtml,
