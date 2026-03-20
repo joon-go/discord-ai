@@ -124,14 +124,22 @@ export async function handleMessage(message) {
   const isMentioned = message.mentions.has(message.client.user);
 
   // ── Detect threads created from the bot's own messages ──
-  // If a user creates a thread on a bot reply, the bot should auto-respond
-  // without requiring @AI Bunny — it's a continuation of the bot's conversation.
+  // If a user creates a thread on a bot reply, the bot auto-responds to the
+  // thread OWNER (the person who created the thread) without requiring @AI Bunny.
+  // Anyone else in the thread must @mention the bot to get a response.
   let isBotThread = false;
   if (!isDM && !isMentioned && message.channel.isThread?.()) {
     try {
       const starterMessage = await message.channel.fetchStarterMessage();
       if (starterMessage?.author?.id === message.client.user.id) {
-        isBotThread = true;
+        // Only treat as a bot thread if the poster is the thread owner
+        const isThreadOwner = message.author.id === message.channel.ownerId;
+        isBotThread = isThreadOwner;
+        if (!isThreadOwner) {
+          logger.info('Non-owner posted in bot thread without @mention — skipping', {
+            userId, username, threadOwnerId: message.channel.ownerId,
+          });
+        }
       }
     } catch {
       // Can't fetch starter message — treat as normal channel message
