@@ -123,12 +123,27 @@ export async function handleMessage(message) {
   const isDM = !message.guild;
   const isMentioned = message.mentions.has(message.client.user);
 
-  // ── Skip human-to-human conversations unless bot is @mentioned ──
+  // ── Detect threads created from the bot's own messages ──
+  // If a user creates a thread on a bot reply, the bot should auto-respond
+  // without requiring @AI Bunny — it's a continuation of the bot's conversation.
+  let isBotThread = false;
+  if (!isDM && !isMentioned && message.channel.isThread?.()) {
+    try {
+      const starterMessage = await message.channel.fetchStarterMessage();
+      if (starterMessage?.author?.id === message.client.user.id) {
+        isBotThread = true;
+      }
+    } catch {
+      // Can't fetch starter message — treat as normal channel message
+    }
+  }
+
+  // ── Skip human-to-human conversations unless bot is @mentioned or it's a bot thread ──
   // Two cases: (1) a reply to another human's message, (2) a top-level message
   // that @mentions other users but NOT the bot. Both are human conversations.
   // The bot only auto-responds to: top-level messages with no human mentions,
-  // replies to its own messages, @mentions, and DMs.
-  if (!isDM && !isMentioned) {
+  // replies to its own messages, @mentions, DMs, and threads from bot messages.
+  if (!isDM && !isMentioned && !isBotThread) {
     // Case 1: reply to another human's message
     if (message.reference?.messageId) {
       try {
@@ -157,7 +172,7 @@ export async function handleMessage(message) {
     }
   }
 
-  if (!isDM && !isMentioned) {
+  if (!isDM && !isMentioned && !isBotThread) {
     const relevant = await shouldRespond(text);
     if (!relevant) {
       logger.info('Skipping irrelevant message', { userId, username, query: text.slice(0, 80) });
@@ -208,12 +223,13 @@ export async function handleMessage(message) {
   }
 
   // ── Build conversation history ──
-  // For threads triggered by mention: fetch thread messages for full context (all participants)
-  // For all other cases (channels/DMs/non-mention threads): use per-user history
+  // For threads (mention-triggered or bot-created): fetch thread messages for full context
+  // For all other cases (channels/DMs): use per-user history
   const isThread = message.channel.isThread?.();
   const isMentionTriggeredThread = isThread && isMentioned;
+  const useThreadHistory = isMentionTriggeredThread || isBotThread;
   let history;
-  if (isMentionTriggeredThread) {
+  if (useThreadHistory) {
     history = await fetchThreadHistory(message);
   } else {
     history = conversationHistory.get(userId) || [];
@@ -276,7 +292,7 @@ export async function handleMessage(message) {
       + `Here's how I can help:\n`
       + `• **Ask me anything** about CodeRabbit — setup, configuration, reviews, billing, CLI, and more\n`
       + `• **Create a support ticket** — just ask and I'll guide you through it\n`
-      + `• **Tag me in threads** — mention \`@AI Bunny\` and I'll read the thread context and jump in\n\n`
+      + `• **Threads** — reply in any thread started from my messages and I'll follow along automatically\n\n`
       + `---\n\n`;
 
     responseText = greeting + responseText;
@@ -320,8 +336,8 @@ export async function handleMessage(message) {
     setTimeout(() => pendingTickets.delete(ticketKey), 24 * 60 * 60 * 1000);
   }
 
-  // ── Update history (skip for mention-triggered threads — thread context is fetched live) ──
-  if (!isMentionTriggeredThread) {
+  // ── Update history (skip for threads — thread context is fetched live) ──
+  if (!useThreadHistory) {
     // Strip references block and greeting before storing — they're display-only
     // and would cause duplicate references/greetings in future context
     const historyResponse = responseText
