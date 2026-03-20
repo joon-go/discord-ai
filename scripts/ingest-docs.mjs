@@ -145,6 +145,10 @@ async function loadLocalRepoFiles(repoPath) {
           // Strip code fences and their content
           raw = raw.replace(/```[\s\S]*?```/g, '');
 
+          // Sanitize characters that break JSON serialization in ChromaDB
+          // Remove null bytes and fix incomplete unicode escape sequences
+          raw = raw.replace(/\0/g, '').replace(/\\u(?![0-9a-fA-F]{4})/g, '');
+
           // Extract title from first # Heading
           const headingMatch = raw.match(/^#{1,6}\s+(.+)$/m);
           const title = headingMatch
