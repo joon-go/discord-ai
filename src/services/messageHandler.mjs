@@ -123,20 +123,32 @@ export async function handleMessage(message) {
   const isDM = !message.guild;
   const isMentioned = message.mentions.has(message.client.user);
 
-  // ── Skip human-to-human replies unless bot is @mentioned ──
-  // If someone replies to another human's message (not the bot's), they're
-  // having a human conversation — the bot should not jump in unless explicitly called.
-  // The bot only auto-responds to: top-level messages, replies to its own messages,
-  // @mentions, and DMs.
-  if (!isDM && !isMentioned && message.reference?.messageId) {
-    try {
-      const repliedTo = await message.channel.messages.fetch(message.reference.messageId);
-      if (repliedTo.author.id !== message.client.user.id) {
-        logger.info('Skipping reply to another human', { userId, username, repliedToUser: repliedTo.author.username });
-        return;
+  // ── Skip human-to-human conversations unless bot is @mentioned ──
+  // Two cases: (1) a reply to another human's message, (2) a top-level message
+  // that @mentions other users but NOT the bot. Both are human conversations.
+  // The bot only auto-responds to: top-level messages with no human mentions,
+  // replies to its own messages, @mentions, and DMs.
+  if (!isDM && !isMentioned) {
+    // Case 1: reply to another human's message
+    if (message.reference?.messageId) {
+      try {
+        const repliedTo = await message.channel.messages.fetch(message.reference.messageId);
+        if (repliedTo.author.id !== message.client.user.id) {
+          logger.info('Skipping reply to another human', { userId, username, repliedToUser: repliedTo.author.username });
+          return;
+        }
+      } catch {
+        // If we can't fetch the referenced message, proceed normally
       }
-    } catch {
-      // If we can't fetch the referenced message, proceed normally
+    }
+
+    // Case 2: top-level message that mentions other human users (but not the bot)
+    const mentionsOtherHumans = message.mentions.users.some(
+      u => u.id !== message.client.user.id && !u.bot
+    );
+    if (mentionsOtherHumans) {
+      logger.info('Skipping human-to-human message with user mentions', { userId, username });
+      return;
     }
   }
 
