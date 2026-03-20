@@ -161,7 +161,7 @@ export async function handleMessage(message) {
             // Non-owner human — announce silence and go quiet
             silencedThreads.add(threadId);
             await message.channel.send(
-              `👋 I noticed another person joined this thread. I'll stay quiet and let the conversation flow — mention \`@AI Bunny\` if you need me!`
+              `🤫 Looks like there are humans in the chat — I'll step back and let you take it from here. Mention \`@AI Bunny\` anytime if you need me to jump back in!`
             );
             logger.info('Non-owner posted in bot thread — bot going silent', { threadId, userId, username });
             return;
