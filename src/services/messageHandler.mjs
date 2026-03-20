@@ -17,6 +17,10 @@ import { logger } from '../utils/logger.mjs';
 const conversationHistory = new Map();  // userId -> [{ role, content }]
 const MAX_HISTORY = parseInt(process.env.MAX_HISTORY_TURNS || '5', 10);
 
+// Track users who have been greeted (separate from conversationHistory
+// because thread-only users don't write to conversationHistory)
+const seenUsers = new Set();  // userId
+
 const cooldowns = new Map();
 const COOLDOWN_MS = parseInt(process.env.USER_COOLDOWN_MS || '3000', 10);
 
@@ -324,7 +328,7 @@ export async function handleMessage(message) {
   }
 
   // ── First-time user greeting ──
-  const isFirstInteraction = !conversationHistory.has(userId);
+  const isFirstInteraction = !seenUsers.has(userId);
   if (isFirstInteraction) {
     const greeting = `👋 Hi <@${userId}>! I'm **AI Bunny**, CodeRabbit's support assistant.\n`
       + `Here's how I can help:\n`
@@ -389,6 +393,9 @@ export async function handleMessage(message) {
     ].slice(-MAX_HISTORY * 2);
     conversationHistory.set(userId, updatedHistory);
   }
+
+  // Mark user as seen (for greeting tracking) regardless of history storage mode
+  seenUsers.add(userId);
 
   logger.info('Response sent', {
     userId,
