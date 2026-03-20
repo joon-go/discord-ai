@@ -235,6 +235,7 @@ async function main() {
     const repoPath = process.env.GITHUB_REPO_PATH;
     if (!repoPath) {
       console.log('\n⚠️  --github flag set but GITHUB_REPO_PATH not configured in .env — skipping');
+      process.exit(0);
     } else {
       console.log(`\n📂 Loading markdown files from ${repoPath}...`);
       const repoPages = await loadLocalRepoFiles(repoPath);
