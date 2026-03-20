@@ -52,6 +52,11 @@ const pendingTickets = new Map();
 const ticketSessions = new Map();  // threadId -> session
 const SESSION_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
 
+// ─── Silenced Bot Threads ────────────────────────────────────────────
+// Tracks threads where a non-owner human has posted — bot stays silent
+// until explicitly @mentioned, which clears the silenced state.
+const silencedThreads = new Set();  // threadId
+
 // ─── Field Definitions ──────────────────────────────────────────────
 const REQUIRED_FIELDS = [
   {
@@ -124,25 +129,47 @@ export async function handleMessage(message) {
   const isMentioned = message.mentions.has(message.client.user);
 
   // ── Detect threads created from the bot's own messages ──
-  // If a user creates a thread on a bot reply, the bot auto-responds to the
-  // thread OWNER (the person who created the thread) without requiring @AI Bunny.
-  // Anyone else in the thread must @mention the bot to get a response.
+  // Thread owner (original requester) gets auto-responses.
+  // If a non-owner human posts, bot announces it's going silent and waits for @mention.
+  // @mention always wakes the bot up and clears the silenced state.
   let isBotThread = false;
-  if (!isDM && !isMentioned && message.channel.isThread?.()) {
-    try {
-      const starterMessage = await message.channel.fetchStarterMessage();
-      if (starterMessage?.author?.id === message.client.user.id) {
-        // Only treat as a bot thread if the poster is the thread owner
-        const isThreadOwner = message.author.id === message.channel.ownerId;
-        isBotThread = isThreadOwner;
-        if (!isThreadOwner) {
-          logger.info('Non-owner posted in bot thread without @mention — skipping', {
-            userId, username, threadOwnerId: message.channel.ownerId,
-          });
+  if (!isDM && message.channel.isThread?.()) {
+    const threadId = message.channel.id;
+
+    // @mention in a silenced thread — clear silence and respond normally
+    if (isMentioned && silencedThreads.has(threadId)) {
+      silencedThreads.delete(threadId);
+      logger.info('Bot re-engaged in silenced thread via @mention', { threadId, userId, username });
+    }
+
+    if (!isMentioned) {
+      try {
+        const starterMessage = await message.channel.fetchStarterMessage();
+        if (starterMessage?.author?.id === message.client.user.id) {
+          const isThreadOwner = message.author.id === message.channel.ownerId;
+
+          if (silencedThreads.has(threadId)) {
+            // Thread is silenced — ignore everyone until @mention
+            logger.info('Ignoring message in silenced bot thread', { threadId, userId, username });
+            return;
+          }
+
+          if (isThreadOwner) {
+            // Original requester — auto-respond
+            isBotThread = true;
+          } else {
+            // Non-owner human — announce silence and go quiet
+            silencedThreads.add(threadId);
+            await message.channel.send(
+              `👋 I noticed another person joined this thread. I'll stay quiet and let the conversation flow — mention \`@AI Bunny\` if you need me!`
+            );
+            logger.info('Non-owner posted in bot thread — bot going silent', { threadId, userId, username });
+            return;
+          }
         }
+      } catch {
+        // Can't fetch starter message — treat as normal channel message
       }
-    } catch {
-      // Can't fetch starter message — treat as normal channel message
     }
   }
 
