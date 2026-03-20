@@ -138,14 +138,14 @@ export async function handleMessage(message) {
     }
   }
 
-  // ── Skip human-to-human conversations unless bot is @mentioned or it's a bot thread ──
-  // Two cases: (1) a reply to another human's message, (2) a top-level message
-  // that @mentions other users but NOT the bot. Both are human conversations.
-  // The bot only auto-responds to: top-level messages with no human mentions,
-  // replies to its own messages, @mentions, DMs, and threads from bot messages.
-  if (!isDM && !isMentioned && !isBotThread) {
-    // Case 1: reply to another human's message
-    if (message.reference?.messageId) {
+  // ── Skip human-to-human conversations unless bot is @mentioned ──
+  // Applies to both channel messages AND bot threads — if someone @mentions another
+  // human (but not the bot) inside a thread, the bot stays out of it.
+  // The bot only auto-responds to: messages with no human @mentions,
+  // replies to its own messages, @mentions, and DMs.
+  if (!isDM && !isMentioned) {
+    // Case 1: reply to another human's message (channels only — threads have no reply refs)
+    if (!isBotThread && message.reference?.messageId) {
       try {
         const repliedTo = await message.channel.messages.fetch(message.reference.messageId);
         if (repliedTo.author.id !== message.client.user.id) {
@@ -162,7 +162,8 @@ export async function handleMessage(message) {
       }
     }
 
-    // Case 2: top-level message that mentions other human users (but not the bot)
+    // Case 2: message that @mentions other human users but not the bot
+    // Applies everywhere including bot threads — human-to-human is human-to-human
     const mentionsOtherHumans = message.mentions.users.some(
       u => u.id !== message.client.user.id && !u.bot
     );
