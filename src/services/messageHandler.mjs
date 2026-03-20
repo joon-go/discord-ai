@@ -17,6 +17,10 @@ import { logger } from '../utils/logger.mjs';
 const conversationHistory = new Map();  // userId -> [{ role, content }]
 const MAX_HISTORY = parseInt(process.env.MAX_HISTORY_TURNS || '5', 10);
 
+// Track users who have been greeted (separate from conversationHistory
+// because thread-only users don't write to conversationHistory)
+const seenUsers = new Set();  // userId
+
 const cooldowns = new Map();
 const COOLDOWN_MS = parseInt(process.env.USER_COOLDOWN_MS || '3000', 10);
 
@@ -51,6 +55,11 @@ const pendingTickets = new Map();
 
 const ticketSessions = new Map();  // threadId -> session
 const SESSION_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
+
+// ─── Silenced Bot Threads ────────────────────────────────────────────
+// Tracks threads where a non-owner human has posted — bot stays silent
+// until explicitly @mentioned, which clears the silenced state.
+const silencedThreads = new Set();  // threadId
 
 // ─── Field Definitions ──────────────────────────────────────────────
 const REQUIRED_FIELDS = [
@@ -123,13 +132,60 @@ export async function handleMessage(message) {
   const isDM = !message.guild;
   const isMentioned = message.mentions.has(message.client.user);
 
+  // ── Detect threads created from the bot's own messages ──
+  // Thread owner (original requester) gets auto-responses.
+  // If a non-owner human posts, bot announces it's going silent and waits for @mention.
+  // @mention always wakes the bot up and clears the silenced state.
+  let isBotThread = false;
+  let botThreadStarterMessage = null; // the bot's original reply the thread was created from
+  if (!isDM && message.channel.isThread?.()) {
+    const threadId = message.channel.id;
+
+    // @mention in a silenced thread — clear silence and respond normally
+    if (isMentioned && silencedThreads.has(threadId)) {
+      silencedThreads.delete(threadId);
+      logger.info('Bot re-engaged in silenced thread via @mention', { threadId, userId, username });
+    }
+
+    if (!isMentioned) {
+      try {
+        const starterMessage = await message.channel.fetchStarterMessage();
+        if (starterMessage?.author?.id === message.client.user.id) {
+          const isThreadOwner = message.author.id === message.channel.ownerId;
+
+          if (silencedThreads.has(threadId)) {
+            // Thread is silenced — ignore everyone until @mention
+            logger.info('Ignoring message in silenced bot thread', { threadId, userId, username });
+            return;
+          }
+
+          if (isThreadOwner) {
+            // Original requester — auto-respond; capture starter for context injection
+            isBotThread = true;
+            botThreadStarterMessage = starterMessage;
+          } else {
+            // Non-owner human — announce silence and go quiet
+            silencedThreads.add(threadId);
+            await message.channel.send(
+              `🤫 Looks like there are humans in the chat — I'll step back and let you take it from here. Mention \`@AI Bunny\` anytime if you need me to jump back in!`
+            );
+            logger.info('Non-owner posted in bot thread — bot going silent', { threadId, userId, username });
+            return;
+          }
+        }
+      } catch {
+        // Can't fetch starter message — treat as normal channel message
+      }
+    }
+  }
+
   // ── Skip human-to-human conversations unless bot is @mentioned ──
-  // Two cases: (1) a reply to another human's message, (2) a top-level message
-  // that @mentions other users but NOT the bot. Both are human conversations.
-  // The bot only auto-responds to: top-level messages with no human mentions,
+  // Applies to both channel messages AND bot threads — if someone @mentions another
+  // human (but not the bot) inside a thread, the bot stays out of it.
+  // The bot only auto-responds to: messages with no human @mentions,
   // replies to its own messages, @mentions, and DMs.
   if (!isDM && !isMentioned) {
-    // Case 1: reply to another human's message
+    // Case 1: reply to another human's message (channels and threads)
     if (message.reference?.messageId) {
       try {
         const repliedTo = await message.channel.messages.fetch(message.reference.messageId);
@@ -147,7 +203,8 @@ export async function handleMessage(message) {
       }
     }
 
-    // Case 2: top-level message that mentions other human users (but not the bot)
+    // Case 2: message that @mentions other human users but not the bot
+    // Applies everywhere including bot threads — human-to-human is human-to-human
     const mentionsOtherHumans = message.mentions.users.some(
       u => u.id !== message.client.user.id && !u.bot
     );
@@ -157,7 +214,7 @@ export async function handleMessage(message) {
     }
   }
 
-  if (!isDM && !isMentioned) {
+  if (!isDM && !isMentioned && !isBotThread) {
     const relevant = await shouldRespond(text);
     if (!relevant) {
       logger.info('Skipping irrelevant message', { userId, username, query: text.slice(0, 80) });
@@ -208,13 +265,14 @@ export async function handleMessage(message) {
   }
 
   // ── Build conversation history ──
-  // For threads triggered by mention: fetch thread messages for full context (all participants)
-  // For all other cases (channels/DMs/non-mention threads): use per-user history
+  // For threads (mention-triggered or bot-created): fetch thread messages for full context
+  // For all other cases (channels/DMs): use per-user history
   const isThread = message.channel.isThread?.();
   const isMentionTriggeredThread = isThread && isMentioned;
+  const useThreadHistory = isMentionTriggeredThread || isBotThread;
   let history;
-  if (isMentionTriggeredThread) {
-    history = await fetchThreadHistory(message);
+  if (useThreadHistory) {
+    history = await fetchThreadHistory(message, botThreadStarterMessage);
   } else {
     history = conversationHistory.get(userId) || [];
   }
@@ -270,13 +328,13 @@ export async function handleMessage(message) {
   }
 
   // ── First-time user greeting ──
-  const isFirstInteraction = !conversationHistory.has(userId);
+  const isFirstInteraction = !seenUsers.has(userId);
   if (isFirstInteraction) {
     const greeting = `👋 Hi <@${userId}>! I'm **AI Bunny**, CodeRabbit's support assistant.\n`
       + `Here's how I can help:\n`
       + `• **Ask me anything** about CodeRabbit — setup, configuration, reviews, billing, CLI, and more\n`
       + `• **Create a support ticket** — just ask and I'll guide you through it\n`
-      + `• **Tag me in threads** — mention \`@AI Bunny\` and I'll read the thread context and jump in\n\n`
+      + `• **Threads** — reply in any thread started from my messages and I'll follow along automatically\n\n`
       + `---\n\n`;
 
     responseText = greeting + responseText;
@@ -320,8 +378,8 @@ export async function handleMessage(message) {
     setTimeout(() => pendingTickets.delete(ticketKey), 24 * 60 * 60 * 1000);
   }
 
-  // ── Update history (skip for mention-triggered threads — thread context is fetched live) ──
-  if (!isMentionTriggeredThread) {
+  // ── Update history (skip for threads — thread context is fetched live) ──
+  if (!useThreadHistory) {
     // Strip references block and greeting before storing — they're display-only
     // and would cause duplicate references/greetings in future context
     const historyResponse = responseText
@@ -335,6 +393,9 @@ export async function handleMessage(message) {
     ].slice(-MAX_HISTORY * 2);
     conversationHistory.set(userId, updatedHistory);
   }
+
+  // Mark user as seen (for greeting tracking) regardless of history storage mode
+  seenUsers.add(userId);
 
   logger.info('Response sent', {
     userId,
@@ -978,7 +1039,7 @@ function containsTicketIntent(text) {
  */
 const MAX_THREAD_MESSAGES = 20;
 
-async function fetchThreadHistory(message) {
+async function fetchThreadHistory(message, starterMessage = null) {
   try {
     const fetched = await message.channel.messages.fetch({
       limit: MAX_THREAD_MESSAGES,
@@ -987,6 +1048,13 @@ async function fetchThreadHistory(message) {
 
     // Messages come newest-first, reverse to chronological order
     const sorted = [...fetched.values()].reverse();
+
+    // Prepend the starter message (bot's original reply in the parent channel)
+    // if it's not already included in the thread's message history
+    const fetchedIds = new Set(sorted.map(m => m.id));
+    if (starterMessage && !fetchedIds.has(starterMessage.id)) {
+      sorted.unshift(starterMessage);
+    }
 
     const history = [];
     for (const msg of sorted) {
