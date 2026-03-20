@@ -195,6 +195,18 @@ async function loadLocalDocs(dirPath) {
   return pages;
 }
 
+// ─── Sanitize Text ───────────────────────────────────────────────────
+// Removes characters that cause JSON serialization failures in ChromaDB:
+//   - Null bytes
+//   - Lone Unicode surrogates (U+D800–U+DFFF) — valid JS but invalid JSON
+//   - C0/C1 control characters (except tab, newline, carriage return)
+function sanitizeText(text) {
+  return text
+    .replace(/\0/g, '')
+    .replace(/[\uD800-\uDFFF]/g, '')
+    .replace(/[\x01-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g, '');
+}
+
 // ─── Chunk Text ──────────────────────────────────────────────────────
 function chunkText(text, size = CHUNK_SIZE, overlap = CHUNK_OVERLAP) {
   const chunks = [];
@@ -280,7 +292,7 @@ async function main() {
     const batch = allChunks.slice(i, i + BATCH_SIZE);
     await collection.add({
       ids: batch.map((_, j) => `doc-${i + j}`),
-      documents: batch.map(c => c.text),
+      documents: batch.map(c => sanitizeText(c.text)),
       metadatas: batch.map(c => c.metadata),
     });
     process.stdout.write(`  Upserted ${Math.min(i + BATCH_SIZE, allChunks.length)}/${allChunks.length}\r`);
