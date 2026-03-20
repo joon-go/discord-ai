@@ -133,6 +133,7 @@ export async function handleMessage(message) {
   // If a non-owner human posts, bot announces it's going silent and waits for @mention.
   // @mention always wakes the bot up and clears the silenced state.
   let isBotThread = false;
+  let botThreadStarterMessage = null; // the bot's original reply the thread was created from
   if (!isDM && message.channel.isThread?.()) {
     const threadId = message.channel.id;
 
@@ -155,8 +156,9 @@ export async function handleMessage(message) {
           }
 
           if (isThreadOwner) {
-            // Original requester — auto-respond
+            // Original requester — auto-respond; capture starter for context injection
             isBotThread = true;
+            botThreadStarterMessage = starterMessage;
           } else {
             // Non-owner human — announce silence and go quiet
             silencedThreads.add(threadId);
@@ -266,7 +268,7 @@ export async function handleMessage(message) {
   const useThreadHistory = isMentionTriggeredThread || isBotThread;
   let history;
   if (useThreadHistory) {
-    history = await fetchThreadHistory(message);
+    history = await fetchThreadHistory(message, botThreadStarterMessage);
   } else {
     history = conversationHistory.get(userId) || [];
   }
@@ -1030,7 +1032,7 @@ function containsTicketIntent(text) {
  */
 const MAX_THREAD_MESSAGES = 20;
 
-async function fetchThreadHistory(message) {
+async function fetchThreadHistory(message, starterMessage = null) {
   try {
     const fetched = await message.channel.messages.fetch({
       limit: MAX_THREAD_MESSAGES,
@@ -1039,6 +1041,13 @@ async function fetchThreadHistory(message) {
 
     // Messages come newest-first, reverse to chronological order
     const sorted = [...fetched.values()].reverse();
+
+    // Prepend the starter message (bot's original reply in the parent channel)
+    // if it's not already included in the thread's message history
+    const fetchedIds = new Set(sorted.map(m => m.id));
+    if (starterMessage && !fetchedIds.has(starterMessage.id)) {
+      sorted.unshift(starterMessage);
+    }
 
     const history = [];
     for (const msg of sorted) {
