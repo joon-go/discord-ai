@@ -137,8 +137,13 @@ export async function handleMessage(message) {
           logger.info('Skipping reply to another human', { userId, username, repliedToUser: repliedTo.author.username });
           return;
         }
-      } catch {
-        // If we can't fetch the referenced message, proceed normally
+      } catch (err) {
+        logger.warn('Failed to fetch replied message; skipping to avoid human-thread intrusion', {
+          userId,
+          username,
+          error: err.message,
+        });
+        return;
       }
     }
 
