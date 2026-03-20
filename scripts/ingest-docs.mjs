@@ -157,8 +157,10 @@ async function loadLocalRepoFiles(repoPath) {
             continue;
           }
 
+          // Store repo-relative path to avoid leaking host filesystem details
+          const relativePath = path.relative(repoPath, fullPath).replace(/^\.\.[\\/]/, '');
           pages.push({
-            url: `local://${fullPath}`,
+            url: `local://${relativePath}`,
             title,
             content,
             source: 'Internal',
