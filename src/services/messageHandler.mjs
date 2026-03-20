@@ -179,8 +179,8 @@ export async function handleMessage(message) {
   // The bot only auto-responds to: messages with no human @mentions,
   // replies to its own messages, @mentions, and DMs.
   if (!isDM && !isMentioned) {
-    // Case 1: reply to another human's message (channels only — threads have no reply refs)
-    if (!isBotThread && message.reference?.messageId) {
+    // Case 1: reply to another human's message (channels and threads)
+    if (message.reference?.messageId) {
       try {
         const repliedTo = await message.channel.messages.fetch(message.reference.messageId);
         if (repliedTo.author.id !== message.client.user.id) {
