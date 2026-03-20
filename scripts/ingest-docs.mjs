@@ -10,11 +10,13 @@
  * Sources:
  *   1. Doc site crawl  (DOC_SITE_URL — product documentation)
  *   2. Local files     (./data/ directory — .md and .txt files)
+ *   3. Local repo      (GITHUB_REPO_PATH — internal markdown docs)
  *
  * Usage:
  *   npm run ingest              # ingest all sources
  *   npm run ingest -- --docs    # doc site only
  *   npm run ingest -- --local   # local files only
+ *   npm run ingest -- --github  # local repo clone only (requires GITHUB_REPO_PATH in .env)
  */
 
 import 'dotenv/config';
@@ -105,6 +107,76 @@ async function crawlSite(baseUrl, maxPages) {
   return pages;
 }
 
+// ─── Load Local Repo Files ───────────────────────────────────────────
+const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', '.github', 'vendor', '.git']);
+const MAX_FILE_SIZE = 100 * 1024; // 100KB
+
+async function loadLocalRepoFiles(repoPath) {
+  const pages = [];
+  let totalFound = 0;
+  let totalSkipped = 0;
+
+  async function walk(dir) {
+    let entries;
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (SKIP_DIRS.has(entry.name)) continue;
+        await walk(fullPath);
+      } else if (entry.isFile() && entry.name.endsWith('.md')) {
+        totalFound++;
+        try {
+          const stat = await fs.stat(fullPath);
+          if (stat.size > MAX_FILE_SIZE) {
+            totalSkipped++;
+            continue;
+          }
+          let raw = await fs.readFile(fullPath, 'utf-8');
+
+          // Strip YAML frontmatter (--- at very start of file)
+          raw = raw.replace(/^\s*---[\s\S]*?---\s*\n?/, '');
+
+          // Strip code fences and their content
+          raw = raw.replace(/```[\s\S]*?```/g, '');
+
+          // Extract title from first # Heading
+          const headingMatch = raw.match(/^#{1,6}\s+(.+)$/m);
+          const title = headingMatch
+            ? headingMatch[1].trim()
+            : path.basename(fullPath, '.md');
+
+          const content = raw.trim();
+          if (content.length < 10) {
+            totalSkipped++;
+            continue;
+          }
+
+          // Store repo-relative path to avoid leaking host filesystem details
+          const relativePath = path.relative(repoPath, fullPath).replace(/^\.\.[\\/]/, '');
+          pages.push({
+            url: `local://${relativePath}`,
+            title,
+            content,
+            source: 'Internal',
+          });
+        } catch {
+          totalSkipped++;
+        }
+      }
+    }
+  }
+
+  await walk(repoPath);
+  console.log(`  📄 Found ${totalFound} .md files — loaded ${pages.length}, skipped ${totalFound - pages.length}`);
+  return pages;
+}
+
 // ─── Load Local Files ────────────────────────────────────────────────
 async function loadLocalDocs(dirPath) {
   const pages = [];
@@ -141,6 +213,7 @@ async function main() {
   const args = process.argv.slice(2);
   const ingestDocs = args.length === 0 || args.includes('--docs');
   const ingestLocal = args.length === 0 || args.includes('--local');
+  const ingestGitHub = args.includes('--github') || (args.length === 0 && !!process.env.GITHUB_REPO_PATH);
 
   console.log('🚀 Starting knowledge base ingestion');
   console.log('   (Pylon KB articles are fetched live at runtime — not ingested here)\n');
@@ -156,6 +229,18 @@ async function main() {
     console.log('\n📂 Loading local files from ./data/...');
     const localPages = await loadLocalDocs('./data');
     allPages.push(...localPages);
+  }
+
+  if (ingestGitHub) {
+    const repoPath = process.env.GITHUB_REPO_PATH;
+    if (!repoPath) {
+      console.log('\n⚠️  --github flag set but GITHUB_REPO_PATH not configured in .env — skipping');
+      process.exit(0);
+    } else {
+      console.log(`\n📂 Loading markdown files from ${repoPath}...`);
+      const repoPages = await loadLocalRepoFiles(repoPath);
+      allPages.push(...repoPages);
+    }
   }
 
   if (allPages.length === 0) {
