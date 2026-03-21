@@ -203,8 +203,11 @@ async function loadLocalDocs(dirPath) {
 function sanitizeText(text) {
   return text
     .replace(/\0/g, '')
-    .replace(/[\uD800-\uDFFF]/g, '')
+    // Remove only lone surrogates, preserve valid surrogate pairs
+    .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/g, '')
+    .replace(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '')
     .replace(/[\x01-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g, '');
+}
 }
 
 // ─── Chunk Text ──────────────────────────────────────────────────────
