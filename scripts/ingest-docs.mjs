@@ -208,7 +208,6 @@ function sanitizeText(text) {
     .replace(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '')
     .replace(/[\x01-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g, '');
 }
-}
 
 // ─── Chunk Text ──────────────────────────────────────────────────────
 function chunkText(text, size = CHUNK_SIZE, overlap = CHUNK_OVERLAP) {
