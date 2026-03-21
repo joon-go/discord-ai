@@ -3,7 +3,7 @@ import { logger } from '../utils/logger.mjs';
 
 const COLLECTION_NAME = process.env.CHROMA_COLLECTION || 'support_kb';
 const RELEVANCE_THRESHOLD = parseFloat(process.env.RELEVANCE_THRESHOLD || '0.3');
-const TOP_K = 5; // Number of chunks to retrieve
+const TOP_K = 10; // Fetch more to allow docs-first filtering with source-code fallback
 
 let collection = null;
 
@@ -53,10 +53,10 @@ export async function queryKnowledgeBase(query, _retried = false) {
       nResults: TOP_K,
     });
 
-    // Filter by relevance threshold
+    // Filter by relevance threshold and split into doc vs source-code chunks
     // ChromaDB returns distances (lower = more similar for cosine)
-    const documents = [];
-    const sources = new Set();
+    const docChunks = [];    // Docs, KB, Internal markdown
+    const codeChunks = [];   // SourceCode fallback
     const sourceUrls = new Set();
 
     if (results.documents?.[0]) {
@@ -67,25 +67,35 @@ export async function queryKnowledgeBase(query, _retried = false) {
         const similarity = 1 - distance / 2;
 
         if (similarity >= RELEVANCE_THRESHOLD) {
-          documents.push(doc);
           const meta = results.metadatas?.[0]?.[i] || {};
-          sources.add(meta.source || 'unknown');
-          if (meta.url && meta.url.startsWith('http')) {
-            sourceUrls.add(JSON.stringify({ url: meta.url, title: meta.title || meta.url }));
+          if (meta.source === 'SourceCode') {
+            codeChunks.push({ doc, meta });
+          } else {
+            docChunks.push({ doc, meta });
+            if (meta.url && meta.url.startsWith('http')) {
+              sourceUrls.add(JSON.stringify({ url: meta.url, title: meta.title || meta.url }));
+            }
           }
         }
       });
     }
 
+    // Prefer docs/KB; fall back to source code only when docs return nothing
+    const usedSource = docChunks.length > 0 ? 'docs' : (codeChunks.length > 0 ? 'source-code-fallback' : 'none');
+    const relevant = docChunks.length > 0 ? docChunks : codeChunks;
+    const sources = new Set(relevant.map(c => c.meta.source || 'unknown'));
+
     logger.info('KB query completed', {
       query: query.slice(0, 80),
       totalResults: results.documents?.[0]?.length || 0,
-      relevantResults: documents.length,
+      docResults: docChunks.length,
+      codeResults: codeChunks.length,
+      usedSource,
     });
 
     // Join chunks into a single context string
-    const context = documents
-      .map((doc, i) => `[Source ${i + 1}]: ${doc}`)
+    const context = relevant
+      .map(({ doc }, i) => `[Source ${i + 1}]: ${doc}`)
       .join('\n\n');
 
     // Deduplicate source URLs
