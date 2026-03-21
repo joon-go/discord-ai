@@ -296,9 +296,9 @@ export async function handleMessage(message) {
   // rather than the code inferring it from hasContext (which would falsely trigger
   // tickets for off-topic declines and [NO_REFS] responses).
   const responseRoutedElsewhere = containsNonSupportRouting(responseText);
-  // Suppress ticket button when AI is still gathering context ([NO_REFS] = clarifying/off-topic).
-  // The button should only appear when the AI has enough product context to warrant escalation.
-  const shouldOfferTicket = isPylonConfigured() && !responseRoutedElsewhere && !suppressRefs && (
+  // [TICKET] and [NO_REFS] are independent signals — a "I don't know, please open a ticket"
+  // response correctly has both. Don't gate the ticket button on suppressRefs.
+  const shouldOfferTicket = isPylonConfigured() && !responseRoutedElsewhere && (
     userWantsTicket || aiWantsTicket || containsEscalationSignal(responseText)
   );
 
