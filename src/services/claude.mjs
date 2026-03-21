@@ -101,7 +101,7 @@ export async function generateResponse(userMessage, kbContext = '', conversation
   try {
     const response = await anthropic.messages.create({
       model: MODEL,
-      max_tokens: 1024,
+      max_tokens: 2048,
       system: SYSTEM_PROMPT,
       messages,
     });
