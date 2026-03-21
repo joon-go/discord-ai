@@ -177,6 +177,77 @@ async function loadLocalRepoFiles(repoPath) {
   return pages;
 }
 
+// ─── Load Source Code Files ──────────────────────────────────────────
+const SOURCE_CODE_EXTENSIONS = new Set(['.ts', '.tsx', '.go', '.py', '.yaml', '.yml']);
+const SOURCE_CODE_SKIP_DIRS = new Set([
+  ...SKIP_DIRS,
+  '__pycache__', '.next', 'out', 'coverage', 'tmp', 'testdata', 'fixtures', 'mocks', 'generated', 'proto',
+]);
+const SOURCE_CODE_MAX_FILE_SIZE = 50 * 1024; // 50KB
+
+function isTestFile(name) {
+  return (
+    name.endsWith('.test.ts') || name.endsWith('.spec.ts') ||
+    name.endsWith('.test.tsx') || name.endsWith('.test.js') ||
+    name.endsWith('_test.go') || name.endsWith('.d.ts')
+  );
+}
+
+async function loadSourceCodeFiles(repoPath, sourceDirs) {
+  const pages = [];
+  let totalFound = 0;
+  let totalSkipped = 0;
+
+  async function walk(dir) {
+    let entries;
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (SOURCE_CODE_SKIP_DIRS.has(entry.name)) continue;
+        await walk(fullPath);
+      } else if (entry.isFile()) {
+        const ext = path.extname(entry.name);
+        if (!SOURCE_CODE_EXTENSIONS.has(ext)) continue;
+        if (isTestFile(entry.name)) continue;
+        totalFound++;
+        try {
+          const stat = await fs.stat(fullPath);
+          if (stat.size > SOURCE_CODE_MAX_FILE_SIZE) { totalSkipped++; continue; }
+
+          const raw = await fs.readFile(fullPath, 'utf-8');
+          const relativePath = path.relative(repoPath, fullPath).replace(/^\.\.[\\/]/, '');
+          // Prepend file path so Claude has context about where the code lives
+          const content = `// ${relativePath}\n${raw}`.trim();
+          if (content.length < 10) { totalSkipped++; continue; }
+
+          pages.push({
+            url: `local://${relativePath}`,
+            title: relativePath,
+            content,
+            source: 'SourceCode',
+          });
+        } catch {
+          totalSkipped++;
+        }
+      }
+    }
+  }
+
+  for (const dir of sourceDirs) {
+    const absDir = path.isAbsolute(dir) ? dir : path.join(repoPath, dir);
+    await walk(absDir);
+  }
+
+  console.log(`  💻 Source code: found ${totalFound} files — loaded ${pages.length}, skipped ${totalSkipped}`);
+  return pages;
+}
+
 // ─── Load Local Files ────────────────────────────────────────────────
 async function loadLocalDocs(dirPath) {
   const pages = [];
@@ -240,6 +311,19 @@ async function main() {
       console.log(`\n📂 Loading markdown files from ${repoPath}...`);
       const repoPages = await loadLocalRepoFiles(repoPath);
       allPages.push(...repoPages);
+
+      // Load source code from configured subdirectories (GITHUB_SOURCE_DIRS)
+      const sourceDirsRaw = process.env.GITHUB_SOURCE_DIRS || '';
+      const sourceDirs = sourceDirsRaw
+        .split(',')
+        .map(d => d.trim())
+        .filter(Boolean);
+
+      if (sourceDirs.length > 0) {
+        console.log(`\n📂 Loading source code from ${sourceDirs.length} director${sourceDirs.length === 1 ? 'y' : 'ies'}...`);
+        const codePages = await loadSourceCodeFiles(repoPath, sourceDirs);
+        allPages.push(...codePages);
+      }
     }
   }
 
