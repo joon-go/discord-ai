@@ -80,9 +80,10 @@ export async function queryKnowledgeBase(query, _retried = false) {
       });
     }
 
-    // Prefer docs/KB; fall back to source code only when docs return nothing
-    const usedSource = docChunks.length > 0 ? 'docs' : (codeChunks.length > 0 ? 'source-code-fallback' : 'none');
-    const relevant = docChunks.length > 0 ? docChunks : codeChunks;
+    // Always merge: docs first (up to 5), code supplements (up to 3).
+    // Exclusive OR was broken — any loose doc match blocked source code entirely.
+    const relevant = [...docChunks.slice(0, 5), ...codeChunks.slice(0, 3)];
+    const usedSource = `docs:${Math.min(docChunks.length, 5)} code:${Math.min(codeChunks.length, 3)}`;
     const sources = new Set(relevant.map(c => c.meta.source || 'unknown'));
 
     logger.info('KB query completed', {
