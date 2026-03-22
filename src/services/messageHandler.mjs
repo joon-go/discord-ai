@@ -12,6 +12,7 @@ import { searchIssues, createIssue, buildTicketHtml, isPylonConfigured, searchKB
 import { getStatusContext } from './status.mjs';
 import { shouldRespond } from './intentClassifier.mjs';
 import { logger } from '../utils/logger.mjs';
+import { validateAndWarn, getValidConfigKeys } from './schemaValidator.mjs';
 
 // ─── In-Memory Stores ───────────────────────────────────────────────
 const conversationHistory = new Map();  // userId -> [{ role, content }]
@@ -290,11 +291,24 @@ export async function handleMessage(message) {
   // Strip all metadata tags from the response regardless of position
   responseText = responseText.replace(/\[NO_REFS\]|\[TICKET\]/g, '').replace(/^\n+/, '').trim();
 
+  // ── Validate config suggestions against known schema ──
+  // If Claude suggested YAML config keys that don't exist in the schema,
+  // get a validation warning (kept separate to avoid false escalation triggers).
+  const validConfigKeys = getValidConfigKeys();
+  let validationWarning = '';
+  if (validConfigKeys.size > 0) {
+    const validationResult = validateAndWarn(responseText, validConfigKeys);
+    responseText = validationResult.text;
+    validationWarning = validationResult.validationWarning;
+  }
+
   // ── Evaluate ticket/routing signals ──
   // NOTE: Ticket offers rely on explicit signals only. If KB retrieval returns
   // no context, the model is responsible for surfacing that via the [TICKET] tag
   // rather than the code inferring it from hasContext (which would falsely trigger
   // tickets for off-topic declines and [NO_REFS] responses).
+  // IMPORTANT: Use the original responseText (not including validationWarning) to avoid
+  // false positives from "open a support ticket" phrase in the validation warning.
   const responseRoutedElsewhere = containsNonSupportRouting(responseText);
   // [TICKET] and [NO_REFS] are independent signals — a "I don't know, please open a ticket"
   // response correctly has both. Don't gate the ticket button on suppressRefs.
@@ -325,6 +339,11 @@ export async function handleMessage(message) {
   if (uniqueRefs.length > 0 && !responseRoutedElsewhere && !suppressRefs) {
     const refLinks = uniqueRefs.map(r => `• [${r.title}](${r.url})`).join('\n');
     responseText += `\n\n📚 **References:**\n${refLinks}`;
+  }
+
+  // ── Append validation warning (after references, for final Discord output) ──
+  if (validationWarning) {
+    responseText += validationWarning;
   }
 
   // ── First-time user greeting ──
