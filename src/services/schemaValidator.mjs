@@ -63,8 +63,8 @@ export async function loadConfigSchema(repoPath) {
         }
 
         for (const key of extractKeyPaths(rootSchema)) validKeys.add(key);
-      } catch {
-        // Skip unparseable files silently
+      } catch (err) {
+        console.warn(`⚠️  Failed to parse schema file ${file}: ${err.message}`);
       }
     }
     console.log(`✅ Config schema loaded — ${validKeys.size} valid key paths`);
@@ -112,19 +112,23 @@ function extractYamlConfigKeys(text) {
 /**
  * Post-process Claude's response: if it contains YAML config blocks,
  * validate all suggested key paths against the known schema Set.
- * Appends an inline warning for any unrecognized keys.
+ * Returns an object with the original text and any validation warning.
  *
- * Returns the (possibly modified) response text.
+ * Returns: { text: string, validationWarning: string }
+ * - text: the original response unchanged
+ * - validationWarning: warning message (empty string if no issues)
  */
 export function validateAndWarn(responseText, validKeys) {
   const suggested = extractYamlConfigKeys(responseText);
-  if (suggested.length === 0) return responseText;
+  if (suggested.length === 0) return { text: responseText, validationWarning: '' };
 
   const invalid = suggested.filter(k => !validKeys.has(k));
-  if (invalid.length === 0) return responseText;
+  if (invalid.length === 0) return { text: responseText, validationWarning: '' };
 
   const keyList = invalid.map(k => `\`${k}\``).join(', ');
   const noun = invalid.length === 1 ? 'option' : 'options';
   const verb = invalid.length === 1 ? 'this is a' : 'these are';
-  return `${responseText}\n\n⚠️ **Config notice:** I suggested ${keyList} but couldn\'t verify ${verb} valid config ${noun}. Please check the [docs](https://docs.coderabbit.ai) or open a support ticket before applying.`;
+  const warning = `\n\n⚠️ **Config notice:** I suggested ${keyList} but couldn\'t verify ${verb} valid config ${noun}. Please check the [docs](https://docs.coderabbit.ai) or open a support ticket before applying.`;
+
+  return { text: responseText, validationWarning: warning };
 }
