@@ -178,7 +178,7 @@ async function loadLocalRepoFiles(repoPath) {
 }
 
 // ─── Load Source Code Files ──────────────────────────────────────────
-const SOURCE_CODE_EXTENSIONS = new Set(['.ts', '.tsx', '.go', '.py', '.yaml', '.yml']);
+const SOURCE_CODE_EXTENSIONS = new Set(['.ts', '.tsx', '.go', '.py', '.yaml', '.yml', '.json']);
 const SOURCE_CODE_SKIP_DIRS = new Set([
   ...SKIP_DIRS,
   '__pycache__', '.next', 'out', 'coverage', 'tmp', 'testdata', 'fixtures', 'mocks', 'generated', 'proto',

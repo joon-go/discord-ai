@@ -12,6 +12,7 @@ import { searchIssues, createIssue, buildTicketHtml, isPylonConfigured, searchKB
 import { getStatusContext } from './status.mjs';
 import { shouldRespond } from './intentClassifier.mjs';
 import { logger } from '../utils/logger.mjs';
+import { validateAndWarn, getValidConfigKeys } from './schemaValidator.mjs';
 
 // ─── In-Memory Stores ───────────────────────────────────────────────
 const conversationHistory = new Map();  // userId -> [{ role, content }]
@@ -289,6 +290,14 @@ export async function handleMessage(message) {
   const aiWantsTicket = responseText.includes('[TICKET]');
   // Strip all metadata tags from the response regardless of position
   responseText = responseText.replace(/\[NO_REFS\]|\[TICKET\]/g, '').replace(/^\n+/, '').trim();
+
+  // ── Validate config suggestions against known schema ──
+  // If Claude suggested YAML config keys that don't exist in the schema,
+  // append an inline warning before the response is sent to Discord.
+  const validConfigKeys = getValidConfigKeys();
+  if (validConfigKeys.size > 0) {
+    responseText = validateAndWarn(responseText, validConfigKeys);
+  }
 
   // ── Evaluate ticket/routing signals ──
   // NOTE: Ticket offers rely on explicit signals only. If KB retrieval returns
