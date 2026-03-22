@@ -53,7 +53,7 @@ export async function queryKnowledgeBase(query, _retried = false) {
     // by a doc-heavy mixed top-K result set.
     const queryOpts = (where, k) => ({ queryTexts: [query], nResults: k, where });
     const safeQuery = async (where, k) => {
-      try { return await col.query(queryOpts(where, k)); } catch { return null; }
+      try { return await col.query(queryOpts(where, k)); } catch (e) { logger.error("col.query failed in safeQuery", { where, k, err: e }); return null; }
     };
 
     const [docResults, codeResults] = await Promise.all([
@@ -62,7 +62,7 @@ export async function queryKnowledgeBase(query, _retried = false) {
     ]);
 
     // Filter by relevance threshold
-    const sourceUrls = new Set();
+    const sourceUrls = new Map();
     const parseChunks = (results, isCode) => {
       const chunks = [];
       results?.documents?.[0]?.forEach((doc, i) => {
@@ -72,7 +72,9 @@ export async function queryKnowledgeBase(query, _retried = false) {
           const meta = results.metadatas?.[0]?.[i] || {};
           chunks.push({ doc, meta });
           if (!isCode && meta.url?.startsWith('http')) {
-            sourceUrls.add(JSON.stringify({ url: meta.url, title: meta.title || meta.url }));
+            if (!sourceUrls.has(meta.url) || !sourceUrls.get(meta.url)) {
+              sourceUrls.set(meta.url, meta.title || meta.url);
+            }
           }
         }
       });
@@ -99,7 +101,7 @@ export async function queryKnowledgeBase(query, _retried = false) {
       .join('\n\n');
 
     // Deduplicate source URLs
-    const refs = [...sourceUrls].map(s => JSON.parse(s));
+    const refs = [...sourceUrls.entries()].map(([url, title]) => ({ url, title }));
 
     return { context, sources: [...sources], refs };
   } catch (err) {
