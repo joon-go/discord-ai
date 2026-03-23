@@ -439,15 +439,18 @@ export async function handleTicketButton(interaction) {
   if (interaction.customId === 'create_ticket') {
     const pending = pendingTickets.get(ticketKey);
 
-    if (!pending) {
-      await interaction.reply({
-        content: '⏰ This ticket prompt has expired. Please ask your question again.',
-        ephemeral: true,
-      });
-      return;
-    }
+    // If pending session is missing (e.g. bot restarted), fall back to a
+    // fresh session so the user doesn't hit a dead end.
+    const pendingOrFallback = pending ?? {
+      query: '',
+      response: '',
+      userId,
+      username: interaction.user.username,
+      channelId: interaction.channelId,
+      channelName: interaction.channel?.name ?? 'unknown',
+    };
 
-    if (pending.userId !== userId) {
+    if (pending && pending.userId !== userId) {
       await interaction.reply({
         content: 'Only the person who asked the question can create a ticket.',
         ephemeral: true,
@@ -481,16 +484,16 @@ export async function handleTicketButton(interaction) {
     // ── Set up collection session ──
     const userMessagesOnly = (conversationHistory.get(userId) || [])
       .filter(m => m.role === 'user')
-      .map(m => m.content).join('\n') + '\n' + pending.query;
+      .map(m => m.content).join('\n') + '\n' + pendingOrFallback.query;
     const extracted = extractInfoFromConversation(userMessagesOnly);
 
     const session = {
-      query: pending.query,
-      response: pending.response,
-      username: pending.username,
+      query: pendingOrFallback.query,
+      response: pendingOrFallback.response,
+      username: pendingOrFallback.username,
       userId,
-      channelId: pending.channelId,
-      channelName: pending.channelName,
+      channelId: pendingOrFallback.channelId,
+      channelName: pendingOrFallback.channelName,
       dmChannelId: dmChannel.id,
       collected: {
         supportCode: extracted.supportCode || null,
