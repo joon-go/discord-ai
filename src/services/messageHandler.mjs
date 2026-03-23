@@ -452,8 +452,13 @@ export async function handleMessage(message) {
 
 export async function handleTicketButton(interaction) {
   // Defer immediately to claim the interaction within Discord's 3-second window.
-  // This prevents "already acknowledged" errors if two processes race on the same click.
-  await interaction.deferReply({ ephemeral: true });
+  // If Discord retried delivery and this interaction was already acknowledged, bail out.
+  try {
+    await interaction.deferReply({ ephemeral: true });
+  } catch (err) {
+    if (err.code === 40060) return; // Already acknowledged — first call is handling it
+    throw err;
+  }
 
   const userId = interaction.user.id;
   const messageId = interaction.message.id;
