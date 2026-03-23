@@ -116,8 +116,20 @@ export async function handleMessage(message) {
 
   // ── Check if this message is in an active ticket collection DM ──
   const session = ticketSessions.get(userId);
-  if (session && !message.guild) {
-    await handleTicketCollection(message, session, text);
+  const isDMChannel = !message.guild;
+
+  if (isDMChannel) {
+    if (session) {
+      // Active ticket session — hand off entirely, no Q&A fallthrough
+      await handleTicketCollection(message, session, text);
+      return;
+    }
+    // DM with no active session — the bot only uses DMs for ticket collection.
+    // If the session is missing (e.g. bot restarted), don't run Q&A — prompt restart.
+    await message.reply(
+      'It looks like your ticket session may have expired (the bot may have restarted). ' +
+      'Please head back to the support channel and click **Create Support Ticket** to start again.'
+    );
     return;
   }
 
