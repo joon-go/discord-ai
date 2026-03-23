@@ -99,6 +99,14 @@ const REQUIRED_FIELDS = [
     optional: true,
     skipWords: ['skip', 'n/a', 'na', 'none', 'no'],
   },
+  {
+    key: 'additionalContext',
+    prompt: '📝 Would you like to add any **additional context** about your issue?\nFeel free to describe what you\'re experiencing, or type **skip** to proceed.',
+    validate: () => true,
+    errorMsg: null,
+    optional: true,
+    skipWords: ['skip', 'n/a', 'na', 'none', 'no'],
+  },
 ];
 
 // ═════════════════════════════════════════════════════════════════════
@@ -116,8 +124,20 @@ export async function handleMessage(message) {
 
   // ── Check if this message is in an active ticket collection DM ──
   const session = ticketSessions.get(userId);
-  if (session && !message.guild) {
-    await handleTicketCollection(message, session, text);
+  const isDMChannel = !message.guild;
+
+  if (isDMChannel) {
+    if (session) {
+      // Active ticket session — hand off entirely, no Q&A fallthrough
+      await handleTicketCollection(message, session, text);
+      return;
+    }
+    // DM with no active session — the bot only uses DMs for ticket collection.
+    // If the session is missing (e.g. bot restarted), don't run Q&A — prompt restart.
+    await message.reply(
+      'It looks like your ticket session may have expired (the bot may have restarted). ' +
+      'Please head back to the support channel and click **Create Support Ticket** to start again.'
+    );
     return;
   }
 
@@ -500,6 +520,7 @@ export async function handleTicketButton(interaction) {
         email: extracted.email || null,
         gitProvider: extracted.gitProvider || null,
         prUrl: extracted.prUrl ?? null,
+        additionalContext: null,
       },
       currentField: null,
       prUrlAsked: !!extracted.prUrl,
@@ -619,17 +640,17 @@ async function handleTicketCollection(message, session, text) {
   const isQuestion = /\?$/.test(text.trim()) ||
     /^(how|what|why|where|when|can|does|is|do|will|should|could|would)\b/i.test(lower);
 
-  if (isQuestion && fieldDef.key !== 'prUrl') {
+  if (isQuestion && !fieldDef.optional) {
     await message.reply(
       `Great question! I can help with that once we finish creating your ticket. 😊\n\nFor now, could you provide:\n${fieldDef.prompt}`
     );
     return;
   }
 
-  // ── Handle optional PR/MR skip ──
-  if (fieldDef.key === 'prUrl' && fieldDef.skipWords?.includes(lower)) {
-    session.collected.prUrl = '';
-    session.prUrlAsked = true;
+  // ── Handle optional field skip ──
+  if (fieldDef.optional && fieldDef.skipWords?.includes(lower)) {
+    session.collected[fieldDef.key] = '';
+    if (fieldDef.key === 'prUrl') session.prUrlAsked = true;
   } else {
     // ── Validate ──
     const clean = text.trim();
@@ -667,7 +688,7 @@ async function finalizeTicket(messageOrInteraction, session) {
   const channel = messageOrInteraction.channel;
   try { await channel.sendTyping(); } catch {}
 
-  const { supportCode, email, gitProvider, prUrl } = session.collected;
+  const { supportCode, email, gitProvider, prUrl, additionalContext } = session.collected;
 
   const ticketBodyHtml = buildTicketHtml({
     query: session.query,
@@ -678,7 +699,7 @@ async function finalizeTicket(messageOrInteraction, session) {
     supportCode,
     gitProvider,
     prUrl: prUrl || '',
-    extra: '',
+    extra: additionalContext || '',
   });
 
   const result = await createIssue({
@@ -786,6 +807,7 @@ export async function handleTicketCommand(interaction) {
       email: null,
       gitProvider: null,
       prUrl: null,
+      additionalContext: null,
     },
     currentField: null,
     prUrlAsked: false,
