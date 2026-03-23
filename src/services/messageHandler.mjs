@@ -807,6 +807,7 @@ export async function handleTicketCommand(interaction) {
       email: null,
       gitProvider: null,
       prUrl: null,
+      additionalContext: null,
     },
     currentField: null,
     prUrlAsked: false,
