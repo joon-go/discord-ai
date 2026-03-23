@@ -431,6 +431,10 @@ export async function handleMessage(message) {
 // ═════════════════════════════════════════════════════════════════════
 
 export async function handleTicketButton(interaction) {
+  // Defer immediately to claim the interaction within Discord's 3-second window.
+  // This prevents "already acknowledged" errors if two processes race on the same click.
+  await interaction.deferReply({ ephemeral: true });
+
   const userId = interaction.user.id;
   const messageId = interaction.message.id;
   const ticketKey = `${userId}-${messageId}`;
@@ -451,10 +455,7 @@ export async function handleTicketButton(interaction) {
     };
 
     if (pending && pending.userId !== userId) {
-      await interaction.reply({
-        content: 'Only the person who asked the question can create a ticket.',
-        ephemeral: true,
-      });
+      await interaction.editReply({ content: 'Only the person who asked the question can create a ticket.' });
       return;
     }
 
@@ -474,9 +475,8 @@ export async function handleTicketButton(interaction) {
       dmChannel = await interaction.user.createDM();
     } catch (err) {
       logger.error('Cannot DM user', { userId, error: err.message });
-      await interaction.reply({
+      await interaction.editReply({
         content: '❌ I can\'t send you a DM. Please make sure your DMs are open for this server (Server Settings → Privacy Settings → Direct Messages).',
-        ephemeral: true,
       });
       return;
     }
@@ -511,11 +511,7 @@ export async function handleTicketButton(interaction) {
     await disableButtons(interaction.message);
     pendingTickets.delete(ticketKey);
 
-    // ── Reply in channel (ephemeral) ──
-    await interaction.reply({
-      content: '📬 I\'ve sent you a DM to collect your ticket details privately!',
-      ephemeral: true,
-    });
+    await interaction.editReply({ content: '📬 I\'ve sent you a DM to collect your ticket details privately!' });
 
     // ── Send first prompt in DM ──
     await sendDMIntro(dmChannel, session);
@@ -532,10 +528,7 @@ export async function handleTicketButton(interaction) {
   // ── "No Thanks" ──
   if (interaction.customId === 'dismiss_ticket') {
     pendingTickets.delete(ticketKey);
-    await interaction.reply({
-      content: '👍 No problem! Let me know if you need anything else.',
-      ephemeral: true,
-    });
+    await interaction.editReply({ content: '👍 No problem! Let me know if you need anything else.' });
     await disableButtons(interaction.message);
   }
 }
@@ -549,7 +542,7 @@ export async function handleTicketSelect(interaction) {
   const session = ticketSessions.get(userId);
 
   if (!session) {
-    await interaction.reply({ content: '⏰ This session has expired. Please start a new ticket.', ephemeral: true });
+    await interaction.update({ content: '⏰ This session has expired. Please start a new ticket.', components: [] });
     return;
   }
 
