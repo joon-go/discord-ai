@@ -640,17 +640,17 @@ async function handleTicketCollection(message, session, text) {
   const isQuestion = /\?$/.test(text.trim()) ||
     /^(how|what|why|where|when|can|does|is|do|will|should|could|would)\b/i.test(lower);
 
-  if (isQuestion && fieldDef.key !== 'prUrl') {
+  if (isQuestion && !fieldDef.optional) {
     await message.reply(
       `Great question! I can help with that once we finish creating your ticket. 😊\n\nFor now, could you provide:\n${fieldDef.prompt}`
     );
     return;
   }
 
-  // ── Handle optional PR/MR skip ──
-  if (fieldDef.key === 'prUrl' && fieldDef.skipWords?.includes(lower)) {
-    session.collected.prUrl = '';
-    session.prUrlAsked = true;
+  // ── Handle optional field skip ──
+  if (fieldDef.optional && fieldDef.skipWords?.includes(lower)) {
+    session.collected[fieldDef.key] = '';
+    if (fieldDef.key === 'prUrl') session.prUrlAsked = true;
   } else {
     // ── Validate ──
     const clean = text.trim();
