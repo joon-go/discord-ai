@@ -446,7 +446,7 @@ export async function handleTicketButton(interaction) {
     // If pending session is missing (e.g. bot restarted), fall back to a
     // fresh session so the user doesn't hit a dead end.
     const pendingOrFallback = pending ?? {
-      query: '',
+      query: `Support request from ${interaction.user.username} in ${interaction.channel?.name ?? 'Discord'}`,
       response: '',
       userId,
       username: interaction.user.username,
