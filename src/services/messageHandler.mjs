@@ -99,6 +99,14 @@ const REQUIRED_FIELDS = [
     optional: true,
     skipWords: ['skip', 'n/a', 'na', 'none', 'no'],
   },
+  {
+    key: 'additionalContext',
+    prompt: '📝 Would you like to add any **additional context** about your issue?\nFeel free to describe what you\'re experiencing, or type **skip** to proceed.',
+    validate: () => true,
+    errorMsg: null,
+    optional: true,
+    skipWords: ['skip', 'n/a', 'na', 'none', 'no'],
+  },
 ];
 
 // ═════════════════════════════════════════════════════════════════════
@@ -512,6 +520,7 @@ export async function handleTicketButton(interaction) {
         email: extracted.email || null,
         gitProvider: extracted.gitProvider || null,
         prUrl: extracted.prUrl ?? null,
+        additionalContext: null,
       },
       currentField: null,
       prUrlAsked: !!extracted.prUrl,
@@ -679,7 +688,7 @@ async function finalizeTicket(messageOrInteraction, session) {
   const channel = messageOrInteraction.channel;
   try { await channel.sendTyping(); } catch {}
 
-  const { supportCode, email, gitProvider, prUrl } = session.collected;
+  const { supportCode, email, gitProvider, prUrl, additionalContext } = session.collected;
 
   const ticketBodyHtml = buildTicketHtml({
     query: session.query,
@@ -690,7 +699,7 @@ async function finalizeTicket(messageOrInteraction, session) {
     supportCode,
     gitProvider,
     prUrl: prUrl || '',
-    extra: '',
+    extra: additionalContext || '',
   });
 
   const result = await createIssue({
