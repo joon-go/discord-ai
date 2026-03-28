@@ -495,13 +495,23 @@ export async function handleTicketButton(interaction) {
     }
 
     // ── Try to DM the user ──
+    // Note: createDM() almost always succeeds — the real test is sending a message.
+    // We send a lightweight probe message first to catch DM-blocked users early.
     let dmChannel;
     try {
       dmChannel = await interaction.user.createDM();
+      await dmChannel.send('📋 Starting your support ticket — one moment…');
     } catch (err) {
-      logger.error('Cannot DM user', { userId, error: err.message });
+      logger.warn('Cannot DM user — DMs likely disabled or bot blocked', { userId, error: err.message });
       await interaction.editReply({
-        content: '❌ I can\'t send you a DM. Please make sure your DMs are open for this server (Server Settings → Privacy Settings → Direct Messages).',
+        content:
+          '❌ I couldn\'t send you a DM. This usually means your DMs are closed for this server.\n\n' +
+          '**How to fix it:**\n' +
+          '1. Right-click (or long-press) the server icon\n' +
+          '2. Go to **Privacy Settings**\n' +
+          '3. Enable **"Allow direct messages from server members"**\n' +
+          '4. Then click **Create Support Ticket** again\n\n' +
+          'If you\'ve blocked this bot, you\'ll need to unblock it first.',
       });
       return;
     }
