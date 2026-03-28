@@ -16,6 +16,7 @@ import {
   handleTicketSelect,
 } from './services/messageHandler.mjs';
 import { logger } from './utils/logger.mjs';
+import { loadConfigSchema, setValidConfigKeys } from './services/schemaValidator.mjs';
 
 // ─── Discord Client Setup ────────────────────────────────────────────
 const client = new Client({
@@ -65,6 +66,12 @@ client.once(Events.ClientReady, async (c) => {
   logger.info(`✅ Bot online as ${c.user.tag}`);
   logger.info(`   Watching ${SUPPORT_CHANNELS.size} support channel(s)`);
   await registerCommands();
+
+  // Load config schema for runtime YAML key validation (if configured)
+  if (process.env.GITHUB_REPO_PATH && process.env.GITHUB_SCHEMA_DIR) {
+    const keys = await loadConfigSchema(process.env.GITHUB_REPO_PATH);
+    setValidConfigKeys(keys);
+  }
 });
 
 // Handle chat messages (support channels and DMs)

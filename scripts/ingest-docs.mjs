@@ -10,11 +10,13 @@
  * Sources:
  *   1. Doc site crawl  (DOC_SITE_URL — product documentation)
  *   2. Local files     (./data/ directory — .md and .txt files)
+ *   3. Local repo      (GITHUB_REPO_PATH — internal markdown docs)
  *
  * Usage:
  *   npm run ingest              # ingest all sources
  *   npm run ingest -- --docs    # doc site only
  *   npm run ingest -- --local   # local files only
+ *   npm run ingest -- --github  # local repo clone only (requires GITHUB_REPO_PATH in .env)
  */
 
 import 'dotenv/config';
@@ -105,6 +107,147 @@ async function crawlSite(baseUrl, maxPages) {
   return pages;
 }
 
+// ─── Load Local Repo Files ───────────────────────────────────────────
+const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', '.github', 'vendor', '.git']);
+const MAX_FILE_SIZE = 100 * 1024; // 100KB
+
+async function loadLocalRepoFiles(repoPath) {
+  const pages = [];
+  let totalFound = 0;
+  let totalSkipped = 0;
+
+  async function walk(dir) {
+    let entries;
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (SKIP_DIRS.has(entry.name)) continue;
+        await walk(fullPath);
+      } else if (entry.isFile() && entry.name.endsWith('.md')) {
+        totalFound++;
+        try {
+          const stat = await fs.stat(fullPath);
+          if (stat.size > MAX_FILE_SIZE) {
+            totalSkipped++;
+            continue;
+          }
+          let raw = await fs.readFile(fullPath, 'utf-8');
+
+          // Strip YAML frontmatter (--- at very start of file)
+          raw = raw.replace(/^\s*---[\s\S]*?---\s*\n?/, '');
+
+          // Strip code fences and their content
+          raw = raw.replace(/```[\s\S]*?```/g, '');
+
+          // Extract title from first # Heading
+          const headingMatch = raw.match(/^#{1,6}\s+(.+)$/m);
+          const title = headingMatch
+            ? headingMatch[1].trim()
+            : path.basename(fullPath, '.md');
+
+          const content = raw.trim();
+          if (content.length < 10) {
+            totalSkipped++;
+            continue;
+          }
+
+          // Store repo-relative path to avoid leaking host filesystem details
+          const relativePath = path.relative(repoPath, fullPath).replace(/^\.\.[\\/]/, '');
+          pages.push({
+            url: `local://${relativePath}`,
+            title,
+            content,
+            source: 'Internal',
+          });
+        } catch {
+          totalSkipped++;
+        }
+      }
+    }
+  }
+
+  await walk(repoPath);
+  console.log(`  📄 Found ${totalFound} .md files — loaded ${pages.length}, skipped ${totalFound - pages.length}`);
+  return pages;
+}
+
+// ─── Load Source Code Files ──────────────────────────────────────────
+const SOURCE_CODE_EXTENSIONS = new Set(['.ts', '.tsx', '.go', '.py', '.yaml', '.yml', '.json']);
+const SOURCE_CODE_SKIP_DIRS = new Set([
+  ...SKIP_DIRS,
+  '__pycache__', '.next', 'out', 'coverage', 'tmp', 'testdata', 'fixtures', 'mocks', 'generated', 'proto',
+]);
+const SOURCE_CODE_MAX_FILE_SIZE = 50 * 1024; // 50KB
+
+function isTestFile(name) {
+  return (
+    name.endsWith('.test.ts') || name.endsWith('.spec.ts') ||
+    name.endsWith('.test.tsx') || name.endsWith('.test.js') ||
+    name.endsWith('_test.go') || name.endsWith('.d.ts')
+  );
+}
+
+async function loadSourceCodeFiles(repoPath, sourceDirs) {
+  const pages = [];
+  let totalFound = 0;
+  let totalSkipped = 0;
+
+  async function walk(dir) {
+    let entries;
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (SOURCE_CODE_SKIP_DIRS.has(entry.name)) continue;
+        await walk(fullPath);
+      } else if (entry.isFile()) {
+        const ext = path.extname(entry.name);
+        if (!SOURCE_CODE_EXTENSIONS.has(ext)) continue;
+        if (isTestFile(entry.name)) continue;
+        totalFound++;
+        try {
+          const stat = await fs.stat(fullPath);
+          if (stat.size > SOURCE_CODE_MAX_FILE_SIZE) { totalSkipped++; continue; }
+
+          const raw = await fs.readFile(fullPath, 'utf-8');
+          const relativePath = path.relative(repoPath, fullPath).replace(/^\.\.[\\/]/, '');
+          // Prepend file path so Claude has context about where the code lives
+          const content = `// ${relativePath}\n${raw}`.trim();
+          if (content.length < 10) { totalSkipped++; continue; }
+
+          pages.push({
+            url: `local://${relativePath}`,
+            title: relativePath,
+            content,
+            source: 'SourceCode',
+          });
+        } catch {
+          totalSkipped++;
+        }
+      }
+    }
+  }
+
+  for (const dir of sourceDirs) {
+    const absDir = path.isAbsolute(dir) ? dir : path.join(repoPath, dir);
+    await walk(absDir);
+  }
+
+  console.log(`  💻 Source code: found ${totalFound} files — loaded ${pages.length}, skipped ${totalSkipped}`);
+  return pages;
+}
+
 // ─── Load Local Files ────────────────────────────────────────────────
 async function loadLocalDocs(dirPath) {
   const pages = [];
@@ -121,6 +264,20 @@ async function loadLocalDocs(dirPath) {
     // data/ dir may not exist
   }
   return pages;
+}
+
+// ─── Sanitize Text ───────────────────────────────────────────────────
+// Removes characters that cause JSON serialization failures in ChromaDB:
+//   - Null bytes
+//   - Lone Unicode surrogates (U+D800–U+DFFF) — valid JS but invalid JSON
+//   - C0/C1 control characters (except tab, newline, carriage return)
+function sanitizeText(text) {
+  return text
+    .replace(/\0/g, '')
+    // Remove only lone surrogates, preserve valid surrogate pairs
+    .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/g, '')
+    .replace(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '')
+    .replace(/[\x01-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g, '');
 }
 
 // ─── Chunk Text ──────────────────────────────────────────────────────
@@ -141,6 +298,7 @@ async function main() {
   const args = process.argv.slice(2);
   const ingestDocs = args.length === 0 || args.includes('--docs');
   const ingestLocal = args.length === 0 || args.includes('--local');
+  const ingestGitHub = args.includes('--github') || (args.length === 0 && !!process.env.GITHUB_REPO_PATH);
 
   console.log('🚀 Starting knowledge base ingestion');
   console.log('   (Pylon KB articles are fetched live at runtime — not ingested here)\n');
@@ -156,6 +314,31 @@ async function main() {
     console.log('\n📂 Loading local files from ./data/...');
     const localPages = await loadLocalDocs('./data');
     allPages.push(...localPages);
+  }
+
+  if (ingestGitHub) {
+    const repoPath = process.env.GITHUB_REPO_PATH;
+    if (!repoPath) {
+      console.log('\n⚠️  --github flag set but GITHUB_REPO_PATH not configured in .env — skipping');
+      process.exit(0);
+    } else {
+      console.log(`\n📂 Loading markdown files from ${repoPath}...`);
+      const repoPages = await loadLocalRepoFiles(repoPath);
+      allPages.push(...repoPages);
+
+      // Load source code from configured subdirectories (GITHUB_SOURCE_DIRS)
+      const sourceDirsRaw = process.env.GITHUB_SOURCE_DIRS || '';
+      const sourceDirs = sourceDirsRaw
+        .split(',')
+        .map(d => d.trim())
+        .filter(Boolean);
+
+      if (sourceDirs.length > 0) {
+        console.log(`\n📂 Loading source code from ${sourceDirs.length} director${sourceDirs.length === 1 ? 'y' : 'ies'}...`);
+        const codePages = await loadSourceCodeFiles(repoPath, sourceDirs);
+        allPages.push(...codePages);
+      }
+    }
   }
 
   if (allPages.length === 0) {
@@ -195,7 +378,7 @@ async function main() {
     const batch = allChunks.slice(i, i + BATCH_SIZE);
     await collection.add({
       ids: batch.map((_, j) => `doc-${i + j}`),
-      documents: batch.map(c => c.text),
+      documents: batch.map(c => sanitizeText(c.text)),
       metadatas: batch.map(c => c.metadata),
     });
     process.stdout.write(`  Upserted ${Math.min(i + BATCH_SIZE, allChunks.length)}/${allChunks.length}\r`);

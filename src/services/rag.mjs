@@ -3,7 +3,8 @@ import { logger } from '../utils/logger.mjs';
 
 const COLLECTION_NAME = process.env.CHROMA_COLLECTION || 'support_kb';
 const RELEVANCE_THRESHOLD = parseFloat(process.env.RELEVANCE_THRESHOLD || '0.3');
-const TOP_K = 5; // Number of chunks to retrieve
+const DOC_K = 5;  // Max doc chunks per query
+const CODE_K = 3; // Max code chunks per query
 
 let collection = null;
 
@@ -48,48 +49,59 @@ export async function queryKnowledgeBase(query, _retried = false) {
       return { context: '', sources: [], refs: [] };
     }
 
-    const results = await col.query({
-      queryTexts: [query],
-      nResults: TOP_K,
-    });
+    // Two independent filtered queries so code chunks can never be crowded out
+    // by a doc-heavy mixed top-K result set.
+    const queryOpts = (where, k) => ({ queryTexts: [query], nResults: k, where });
+    const safeQuery = async (where, k) => {
+      try { return await col.query(queryOpts(where, k)); } catch (e) { logger.error("col.query failed in safeQuery", { where, k, err: e }); return null; }
+    };
+
+    const [docResults, codeResults] = await Promise.all([
+      safeQuery({ source: { $ne: 'SourceCode' } }, DOC_K),
+      safeQuery({ source: { $eq: 'SourceCode' } }, CODE_K),
+    ]);
 
     // Filter by relevance threshold
-    // ChromaDB returns distances (lower = more similar for cosine)
-    const documents = [];
-    const sources = new Set();
-    const sourceUrls = new Set();
-
-    if (results.documents?.[0]) {
-      results.documents[0].forEach((doc, i) => {
+    const sourceUrls = new Map();
+    const parseChunks = (results, isCode) => {
+      const chunks = [];
+      results?.documents?.[0]?.forEach((doc, i) => {
         const distance = results.distances?.[0]?.[i] ?? 1;
-        // For cosine distance: 0 = identical, 2 = opposite
-        // Convert to similarity: 1 - (distance / 2)
         const similarity = 1 - distance / 2;
-
         if (similarity >= RELEVANCE_THRESHOLD) {
-          documents.push(doc);
           const meta = results.metadatas?.[0]?.[i] || {};
-          sources.add(meta.source || 'unknown');
-          if (meta.url && meta.url.startsWith('http')) {
-            sourceUrls.add(JSON.stringify({ url: meta.url, title: meta.title || meta.url }));
+          chunks.push({ doc, meta });
+          if (!isCode && meta.url?.startsWith('http')) {
+            if (!sourceUrls.has(meta.url) || !sourceUrls.get(meta.url)) {
+              sourceUrls.set(meta.url, meta.title || meta.url);
+            }
           }
         }
       });
-    }
+      return chunks;
+    };
+
+    const docChunks = parseChunks(docResults, false);
+    const codeChunks = parseChunks(codeResults, true);
+
+    const relevant = [...docChunks.slice(0, DOC_K), ...codeChunks.slice(0, CODE_K)];
+    const usedSource = `docs:${Math.min(docChunks.length, DOC_K)} code:${Math.min(codeChunks.length, CODE_K)}`;
+    const sources = new Set(relevant.map(c => c.meta.source || 'unknown'));
 
     logger.info('KB query completed', {
       query: query.slice(0, 80),
-      totalResults: results.documents?.[0]?.length || 0,
-      relevantResults: documents.length,
+      docResults: docChunks.length,
+      codeResults: codeChunks.length,
+      usedSource,
     });
 
     // Join chunks into a single context string
-    const context = documents
-      .map((doc, i) => `[Source ${i + 1}]: ${doc}`)
+    const context = relevant
+      .map(({ doc }, i) => `[Source ${i + 1}]: ${doc}`)
       .join('\n\n');
 
     // Deduplicate source URLs
-    const refs = [...sourceUrls].map(s => JSON.parse(s));
+    const refs = [...sourceUrls.entries()].map(([url, title]) => ({ url, title }));
 
     return { context, sources: [...sources], refs };
   } catch (err) {

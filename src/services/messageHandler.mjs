@@ -12,10 +12,15 @@ import { searchIssues, createIssue, buildTicketHtml, isPylonConfigured, searchKB
 import { getStatusContext } from './status.mjs';
 import { shouldRespond } from './intentClassifier.mjs';
 import { logger } from '../utils/logger.mjs';
+import { validateAndWarn, getValidConfigKeys } from './schemaValidator.mjs';
 
 // ─── In-Memory Stores ───────────────────────────────────────────────
 const conversationHistory = new Map();  // userId -> [{ role, content }]
 const MAX_HISTORY = parseInt(process.env.MAX_HISTORY_TURNS || '5', 10);
+
+// Track users who have been greeted (separate from conversationHistory
+// because thread-only users don't write to conversationHistory)
+const seenUsers = new Set();  // userId
 
 const cooldowns = new Map();
 const COOLDOWN_MS = parseInt(process.env.USER_COOLDOWN_MS || '3000', 10);
@@ -51,6 +56,11 @@ const pendingTickets = new Map();
 
 const ticketSessions = new Map();  // threadId -> session
 const SESSION_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
+
+// ─── Silenced Bot Threads ────────────────────────────────────────────
+// Tracks threads where a non-owner human has posted — bot stays silent
+// until explicitly @mentioned, which clears the silenced state.
+const silencedThreads = new Set();  // threadId
 
 // ─── Field Definitions ──────────────────────────────────────────────
 const REQUIRED_FIELDS = [
@@ -89,6 +99,14 @@ const REQUIRED_FIELDS = [
     optional: true,
     skipWords: ['skip', 'n/a', 'na', 'none', 'no'],
   },
+  {
+    key: 'additionalContext',
+    prompt: '📝 Would you like to add any **additional context** about your issue?\nFeel free to describe what you\'re experiencing, or type **skip** to proceed.',
+    validate: () => true,
+    errorMsg: null,
+    optional: true,
+    skipWords: ['skip', 'n/a', 'na', 'none', 'no'],
+  },
 ];
 
 // ═════════════════════════════════════════════════════════════════════
@@ -106,8 +124,20 @@ export async function handleMessage(message) {
 
   // ── Check if this message is in an active ticket collection DM ──
   const session = ticketSessions.get(userId);
-  if (session && !message.guild) {
-    await handleTicketCollection(message, session, text);
+  const isDMChannel = !message.guild;
+
+  if (isDMChannel) {
+    if (session) {
+      // Active ticket session — hand off entirely, no Q&A fallthrough
+      await handleTicketCollection(message, session, text);
+      return;
+    }
+    // DM with no active session — the bot only uses DMs for ticket collection.
+    // If the session is missing (e.g. bot restarted), don't run Q&A — prompt restart.
+    await message.reply(
+      'It looks like your ticket session may have expired (the bot may have restarted). ' +
+      'Please head back to the support channel and click **Create Support Ticket** to start again.'
+    );
     return;
   }
 
@@ -123,24 +153,89 @@ export async function handleMessage(message) {
   const isDM = !message.guild;
   const isMentioned = message.mentions.has(message.client.user);
 
-  // ── Skip human-to-human replies unless bot is @mentioned ──
-  // If someone replies to another human's message (not the bot's), they're
-  // having a human conversation — the bot should not jump in unless explicitly called.
-  // The bot only auto-responds to: top-level messages, replies to its own messages,
-  // @mentions, and DMs.
-  if (!isDM && !isMentioned && message.reference?.messageId) {
-    try {
-      const repliedTo = await message.channel.messages.fetch(message.reference.messageId);
-      if (repliedTo.author.id !== message.client.user.id) {
-        logger.info('Skipping reply to another human', { userId, username, repliedToUser: repliedTo.author.username });
-        return;
+  // ── Detect threads created from the bot's own messages ──
+  // Thread owner (original requester) gets auto-responses.
+  // If a non-owner human posts, bot announces it's going silent and waits for @mention.
+  // @mention always wakes the bot up and clears the silenced state.
+  let isBotThread = false;
+  let botThreadStarterMessage = null; // the bot's original reply the thread was created from
+  if (!isDM && message.channel.isThread?.()) {
+    const threadId = message.channel.id;
+
+    // @mention in a silenced thread — clear silence and respond normally
+    if (isMentioned && silencedThreads.has(threadId)) {
+      silencedThreads.delete(threadId);
+      logger.info('Bot re-engaged in silenced thread via @mention', { threadId, userId, username });
+    }
+
+    if (!isMentioned) {
+      try {
+        const starterMessage = await message.channel.fetchStarterMessage();
+        if (starterMessage?.author?.id === message.client.user.id) {
+          const isThreadOwner = message.author.id === message.channel.ownerId;
+
+          if (silencedThreads.has(threadId)) {
+            // Thread is silenced — ignore everyone until @mention
+            logger.info('Ignoring message in silenced bot thread', { threadId, userId, username });
+            return;
+          }
+
+          if (isThreadOwner) {
+            // Original requester — auto-respond; capture starter for context injection
+            isBotThread = true;
+            botThreadStarterMessage = starterMessage;
+          } else {
+            // Non-owner human — announce silence and go quiet
+            silencedThreads.add(threadId);
+            await message.channel.send(
+              `🤫 Looks like there are humans in the chat — I'll step back and let you take it from here. Mention \`@AI Bunny\` anytime if you need me to jump back in!`
+            );
+            logger.info('Non-owner posted in bot thread — bot going silent', { threadId, userId, username });
+            return;
+          }
+        }
+      } catch {
+        // Can't fetch starter message — treat as normal channel message
       }
-    } catch {
-      // If we can't fetch the referenced message, proceed normally
     }
   }
 
+  // ── Skip human-to-human conversations unless bot is @mentioned ──
+  // Applies to both channel messages AND bot threads — if someone @mentions another
+  // human (but not the bot) inside a thread, the bot stays out of it.
+  // The bot only auto-responds to: messages with no human @mentions,
+  // replies to its own messages, @mentions, and DMs.
   if (!isDM && !isMentioned) {
+    // Case 1: reply to another human's message (channels and threads)
+    if (message.reference?.messageId) {
+      try {
+        const repliedTo = await message.channel.messages.fetch(message.reference.messageId);
+        if (repliedTo.author.id !== message.client.user.id) {
+          logger.info('Skipping reply to another human', { userId, username, repliedToUser: repliedTo.author.username });
+          return;
+        }
+      } catch (err) {
+        logger.warn('Failed to fetch replied message; skipping to avoid human-thread intrusion', {
+          userId,
+          username,
+          error: err.message,
+        });
+        return;
+      }
+    }
+
+    // Case 2: message that @mentions other human users but not the bot
+    // Applies everywhere including bot threads — human-to-human is human-to-human
+    const mentionsOtherHumans = message.mentions.users.some(
+      u => u.id !== message.client.user.id && !u.bot
+    );
+    if (mentionsOtherHumans) {
+      logger.info('Skipping human-to-human message with user mentions', { userId, username });
+      return;
+    }
+  }
+
+  if (!isDM && !isMentioned && !isBotThread) {
     const relevant = await shouldRespond(text);
     if (!relevant) {
       logger.info('Skipping irrelevant message', { userId, username, query: text.slice(0, 80) });
@@ -153,7 +248,11 @@ export async function handleMessage(message) {
   logger.info('Processing query', { userId, username, query: queryText.slice(0, 100), images: hasImages });
 
   // ── Check if user wants a ticket/agent ──
-  const userWantsTicket = containsTicketIntent(queryText);
+  // Don't offer to create a new ticket if the user is referencing an existing one
+  // ── Check if user is asking about an existing ticket ──
+  // We can't securely verify ticket ownership, so direct them to reply on the ticket.
+  const userReferencesExistingTicket = referencesExistingTicket(queryText);
+  const userWantsTicket = !userReferencesExistingTicket && containsTicketIntent(queryText);
 
   // ── Parallel retrieval (always fetch — KB may have routing info for non-support inquiries) ──
   const [docResult, kbResult, pylonResult] = await Promise.all([
@@ -187,13 +286,14 @@ export async function handleMessage(message) {
   }
 
   // ── Build conversation history ──
-  // For threads triggered by mention: fetch thread messages for full context (all participants)
-  // For all other cases (channels/DMs/non-mention threads): use per-user history
+  // For threads (mention-triggered or bot-created): fetch thread messages for full context
+  // For all other cases (channels/DMs): use per-user history
   const isThread = message.channel.isThread?.();
   const isMentionTriggeredThread = isThread && isMentioned;
+  const useThreadHistory = isMentionTriggeredThread || isBotThread;
   let history;
-  if (isMentionTriggeredThread) {
-    history = await fetchThreadHistory(message);
+  if (useThreadHistory) {
+    history = await fetchThreadHistory(message, botThreadStarterMessage);
   } else {
     history = conversationHistory.get(userId) || [];
   }
@@ -211,12 +311,27 @@ export async function handleMessage(message) {
   // Strip all metadata tags from the response regardless of position
   responseText = responseText.replace(/\[NO_REFS\]|\[TICKET\]/g, '').replace(/^\n+/, '').trim();
 
+  // ── Validate config suggestions against known schema ──
+  // If Claude suggested YAML config keys that don't exist in the schema,
+  // get a validation warning (kept separate to avoid false escalation triggers).
+  const validConfigKeys = getValidConfigKeys();
+  let validationWarning = '';
+  if (validConfigKeys.size > 0) {
+    const validationResult = validateAndWarn(responseText, validConfigKeys);
+    responseText = validationResult.text;
+    validationWarning = validationResult.validationWarning;
+  }
+
   // ── Evaluate ticket/routing signals ──
   // NOTE: Ticket offers rely on explicit signals only. If KB retrieval returns
   // no context, the model is responsible for surfacing that via the [TICKET] tag
   // rather than the code inferring it from hasContext (which would falsely trigger
   // tickets for off-topic declines and [NO_REFS] responses).
+  // IMPORTANT: Use the original responseText (not including validationWarning) to avoid
+  // false positives from "open a support ticket" phrase in the validation warning.
   const responseRoutedElsewhere = containsNonSupportRouting(responseText);
+  // [TICKET] and [NO_REFS] are independent signals — a "I don't know, please open a ticket"
+  // response correctly has both. Don't gate the ticket button on suppressRefs.
   const shouldOfferTicket = isPylonConfigured() && !responseRoutedElsewhere && (
     userWantsTicket || aiWantsTicket || containsEscalationSignal(responseText)
   );
@@ -246,15 +361,21 @@ export async function handleMessage(message) {
     responseText += `\n\n📚 **References:**\n${refLinks}`;
   }
 
+  // ── Append validation warning (after references, for final Discord output) ──
+  if (validationWarning) {
+    responseText += validationWarning;
+  }
+
   // ── First-time user greeting ──
-  const isFirstInteraction = !conversationHistory.has(userId);
+  const isFirstInteraction = !seenUsers.has(userId);
   if (isFirstInteraction) {
     const greeting = `👋 Hi <@${userId}>! I'm **AI Bunny**, CodeRabbit's support assistant.\n`
       + `Here's how I can help:\n`
       + `• **Ask me anything** about CodeRabbit — setup, configuration, reviews, billing, CLI, and more\n`
       + `• **Create a support ticket** — just ask and I'll guide you through it\n`
-      + `• **Tag me in threads** — mention \`@AI Bunny\` and I'll read the thread context and jump in\n\n`
+      + `• **Threads** — reply in any thread started from my messages and I'll follow along automatically\n\n`
       + `---\n\n`;
+
     responseText = greeting + responseText;
   }
 
@@ -296,15 +417,24 @@ export async function handleMessage(message) {
     setTimeout(() => pendingTickets.delete(ticketKey), 24 * 60 * 60 * 1000);
   }
 
-  // ── Update history (skip for mention-triggered threads — thread context is fetched live) ──
-  if (!isMentionTriggeredThread) {
+  // ── Update history (skip for threads — thread context is fetched live) ──
+  if (!useThreadHistory) {
+    // Strip references block and greeting before storing — they're display-only
+    // and would cause duplicate references/greetings in future context
+    const historyResponse = responseText
+      .replace(/\n\n📚 \*\*References:\*\*[\s\S]*$/, '')
+      .replace(/^👋.*?---\n\n/s, '')
+      .trim();
     const updatedHistory = [
       ...history,
       { role: 'user', content: queryText },
-      { role: 'assistant', content: responseText },
+      { role: 'assistant', content: historyResponse },
     ].slice(-MAX_HISTORY * 2);
     conversationHistory.set(userId, updatedHistory);
   }
+
+  // Mark user as seen (for greeting tracking) regardless of history storage mode
+  seenUsers.add(userId);
 
   logger.info('Response sent', {
     userId,
@@ -321,6 +451,15 @@ export async function handleMessage(message) {
 // ═════════════════════════════════════════════════════════════════════
 
 export async function handleTicketButton(interaction) {
+  // Defer immediately to claim the interaction within Discord's 3-second window.
+  // If Discord retried delivery and this interaction was already acknowledged, bail out.
+  try {
+    await interaction.deferReply({ ephemeral: true });
+  } catch (err) {
+    if (err.code === 40060) return; // Already acknowledged — first call is handling it
+    throw err;
+  }
+
   const userId = interaction.user.id;
   const messageId = interaction.message.id;
   const ticketKey = `${userId}-${messageId}`;
@@ -329,19 +468,19 @@ export async function handleTicketButton(interaction) {
   if (interaction.customId === 'create_ticket') {
     const pending = pendingTickets.get(ticketKey);
 
-    if (!pending) {
-      await interaction.reply({
-        content: '⏰ This ticket prompt has expired. Please ask your question again.',
-        ephemeral: true,
-      });
-      return;
-    }
+    // If pending session is missing (e.g. bot restarted), fall back to a
+    // fresh session so the user doesn't hit a dead end.
+    const pendingOrFallback = pending ?? {
+      query: `Support request from ${interaction.user.username} in ${interaction.channel?.name ?? 'Discord'}`,
+      response: '',
+      userId,
+      username: interaction.user.username,
+      channelId: interaction.channelId,
+      channelName: interaction.channel?.name ?? 'unknown',
+    };
 
-    if (pending.userId !== userId) {
-      await interaction.reply({
-        content: 'Only the person who asked the question can create a ticket.',
-        ephemeral: true,
-      });
+    if (pending && pending.userId !== userId) {
+      await interaction.editReply({ content: 'Only the person who asked the question can create a ticket.' });
       return;
     }
 
@@ -361,9 +500,8 @@ export async function handleTicketButton(interaction) {
       dmChannel = await interaction.user.createDM();
     } catch (err) {
       logger.error('Cannot DM user', { userId, error: err.message });
-      await interaction.reply({
+      await interaction.editReply({
         content: '❌ I can\'t send you a DM. Please make sure your DMs are open for this server (Server Settings → Privacy Settings → Direct Messages).',
-        ephemeral: true,
       });
       return;
     }
@@ -371,22 +509,23 @@ export async function handleTicketButton(interaction) {
     // ── Set up collection session ──
     const userMessagesOnly = (conversationHistory.get(userId) || [])
       .filter(m => m.role === 'user')
-      .map(m => m.content).join('\n') + '\n' + pending.query;
+      .map(m => m.content).join('\n') + '\n' + pendingOrFallback.query;
     const extracted = extractInfoFromConversation(userMessagesOnly);
 
     const session = {
-      query: pending.query,
-      response: pending.response,
-      username: pending.username,
+      query: pendingOrFallback.query,
+      response: pendingOrFallback.response,
+      username: pendingOrFallback.username,
       userId,
-      channelId: pending.channelId,
-      channelName: pending.channelName,
+      channelId: pendingOrFallback.channelId,
+      channelName: pendingOrFallback.channelName,
       dmChannelId: dmChannel.id,
       collected: {
         supportCode: extracted.supportCode || null,
         email: extracted.email || null,
         gitProvider: extracted.gitProvider || null,
         prUrl: extracted.prUrl ?? null,
+        additionalContext: null,
       },
       currentField: null,
       prUrlAsked: !!extracted.prUrl,
@@ -398,11 +537,7 @@ export async function handleTicketButton(interaction) {
     await disableButtons(interaction.message);
     pendingTickets.delete(ticketKey);
 
-    // ── Reply in channel (ephemeral) ──
-    await interaction.reply({
-      content: '📬 I\'ve sent you a DM to collect your ticket details privately!',
-      ephemeral: true,
-    });
+    await interaction.editReply({ content: '📬 I\'ve sent you a DM to collect your ticket details privately!' });
 
     // ── Send first prompt in DM ──
     await sendDMIntro(dmChannel, session);
@@ -419,10 +554,7 @@ export async function handleTicketButton(interaction) {
   // ── "No Thanks" ──
   if (interaction.customId === 'dismiss_ticket') {
     pendingTickets.delete(ticketKey);
-    await interaction.reply({
-      content: '👍 No problem! Let me know if you need anything else.',
-      ephemeral: true,
-    });
+    await interaction.editReply({ content: '👍 No problem! Let me know if you need anything else.' });
     await disableButtons(interaction.message);
   }
 }
@@ -436,7 +568,7 @@ export async function handleTicketSelect(interaction) {
   const session = ticketSessions.get(userId);
 
   if (!session) {
-    await interaction.reply({ content: '⏰ This session has expired. Please start a new ticket.', ephemeral: true });
+    await interaction.update({ content: '⏰ This session has expired. Please start a new ticket.', components: [] });
     return;
   }
 
@@ -513,17 +645,17 @@ async function handleTicketCollection(message, session, text) {
   const isQuestion = /\?$/.test(text.trim()) ||
     /^(how|what|why|where|when|can|does|is|do|will|should|could|would)\b/i.test(lower);
 
-  if (isQuestion && fieldDef.key !== 'prUrl') {
+  if (isQuestion && !fieldDef.optional) {
     await message.reply(
       `Great question! I can help with that once we finish creating your ticket. 😊\n\nFor now, could you provide:\n${fieldDef.prompt}`
     );
     return;
   }
 
-  // ── Handle optional PR/MR skip ──
-  if (fieldDef.key === 'prUrl' && fieldDef.skipWords?.includes(lower)) {
-    session.collected.prUrl = '';
-    session.prUrlAsked = true;
+  // ── Handle optional field skip ──
+  if (fieldDef.optional && fieldDef.skipWords?.includes(lower)) {
+    session.collected[fieldDef.key] = '';
+    if (fieldDef.key === 'prUrl') session.prUrlAsked = true;
   } else {
     // ── Validate ──
     const clean = text.trim();
@@ -561,7 +693,7 @@ async function finalizeTicket(messageOrInteraction, session) {
   const channel = messageOrInteraction.channel;
   try { await channel.sendTyping(); } catch {}
 
-  const { supportCode, email, gitProvider, prUrl } = session.collected;
+  const { supportCode, email, gitProvider, prUrl, additionalContext } = session.collected;
 
   const ticketBodyHtml = buildTicketHtml({
     query: session.query,
@@ -572,7 +704,7 @@ async function finalizeTicket(messageOrInteraction, session) {
     supportCode,
     gitProvider,
     prUrl: prUrl || '',
-    extra: '',
+    extra: additionalContext || '',
   });
 
   const result = await createIssue({
@@ -680,6 +812,7 @@ export async function handleTicketCommand(interaction) {
       email: null,
       gitProvider: null,
       prUrl: null,
+      additionalContext: null,
     },
     currentField: null,
     prUrlAsked: false,
@@ -885,6 +1018,21 @@ function containsNonSupportRouting(text) {
 }
 
 /**
+ * Detect if the user is referencing an existing ticket (not trying to create a new one).
+ * Used to suppress the "Create Support Ticket" button when user already has a ticket.
+ */
+function referencesExistingTicket(text) {
+  const lower = text.toLowerCase();
+  const existingTicketPhrases = [
+    'opened a ticket', 'submitted a ticket', 'created a ticket', 'have a ticket',
+    'my ticket', 'ticket number', 'ticket #', 'ticket id', 'existing ticket',
+    'already have a ticket', 'already opened', 'already submitted',
+    'i have an open ticket', 'i have a support ticket',
+  ];
+  return existingTicketPhrases.some(p => lower.includes(p));
+}
+
+/**
  * Detect if the user is explicitly asking to create a ticket or talk to a human.
  */
 function containsTicketIntent(text) {
@@ -933,7 +1081,7 @@ function containsTicketIntent(text) {
  */
 const MAX_THREAD_MESSAGES = 20;
 
-async function fetchThreadHistory(message) {
+async function fetchThreadHistory(message, starterMessage = null) {
   try {
     const fetched = await message.channel.messages.fetch({
       limit: MAX_THREAD_MESSAGES,
@@ -942,6 +1090,13 @@ async function fetchThreadHistory(message) {
 
     // Messages come newest-first, reverse to chronological order
     const sorted = [...fetched.values()].reverse();
+
+    // Prepend the starter message (bot's original reply in the parent channel)
+    // if it's not already included in the thread's message history
+    const fetchedIds = new Set(sorted.map(m => m.id));
+    if (starterMessage && !fetchedIds.has(starterMessage.id)) {
+      sorted.unshift(starterMessage);
+    }
 
     const history = [];
     for (const msg of sorted) {
