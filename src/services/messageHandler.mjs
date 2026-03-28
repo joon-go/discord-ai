@@ -519,6 +519,7 @@ export async function handleTicketButton(interaction) {
       userId,
       channelId: pendingOrFallback.channelId,
       channelName: pendingOrFallback.channelName,
+      originalMessageId: messageId,
       dmChannelId: dmChannel.id,
       collected: {
         supportCode: extracted.supportCode || null,
@@ -746,6 +747,25 @@ async function finalizeTicket(messageOrInteraction, session) {
 
     // Send confirmation in DM
     await channel.send({ embeds: [embed] });
+
+    // Update original channel message with ticket-created indicator
+    if (session.originalMessageId && session.channelId) {
+      try {
+        const client = messageOrInteraction.client;
+        const originalChannel = await client.channels.fetch(session.channelId);
+        const originalMessage = await originalChannel.messages.fetch(session.originalMessageId);
+        const successRow = new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId('ticket_created_indicator')
+            .setLabel('\u2705 Ticket Created')
+            .setStyle(ButtonStyle.Success)
+            .setDisabled(true),
+        );
+        await originalMessage.edit({ components: [successRow] });
+      } catch (err) {
+        logger.warn('Failed to update original message with ticket indicator', { error: err.message });
+      }
+    }
 
     logger.info('Ticket created via DM', {
       userId: session.userId,
