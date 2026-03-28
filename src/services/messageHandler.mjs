@@ -622,7 +622,7 @@ async function finalizeTicket(messageOrInteraction, session) {
       gitProvider,
     });
   } else {
-    await message.reply(
+    await channel.send(
       '❌ Sorry, I wasn\'t able to create the ticket. Please reach out to our support team directly.'
     );
   }
