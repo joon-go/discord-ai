@@ -495,12 +495,9 @@ export async function handleTicketButton(interaction) {
     }
 
     // ── Try to DM the user ──
-    // Note: createDM() almost always succeeds — the real test is sending a message.
-    // We send a lightweight probe message first to catch DM-blocked users early.
     let dmChannel;
     try {
-      dmChannel = await interaction.user.createDM();
-      await dmChannel.send('📋 Starting your support ticket — one moment…');
+      dmChannel = await ensureDmReachable(interaction.user);
     } catch (err) {
       logger.warn('Cannot DM user — DMs likely disabled or bot blocked', { userId, error: err.message });
       await interaction.editReply({
@@ -818,7 +815,7 @@ export async function handleTicketCommand(interaction) {
   // ── Try to DM the user ──
   let dmChannel;
   try {
-    dmChannel = await interaction.user.createDM();
+    dmChannel = await ensureDmReachable(interaction.user);
   } catch (err) {
     logger.error('Cannot DM user for /ticket', { userId, error: err.message });
     await interaction.reply({
@@ -870,6 +867,22 @@ export async function handleTicketCommand(interaction) {
 // ═════════════════════════════════════════════════════════════════════
 //  HELPERS
 // ═════════════════════════════════════════════════════════════════════
+
+/**
+ * Ensure the user can receive DMs by creating a DM channel and sending a probe message.
+ * Returns the DM channel on success, or throws an error if DMs are blocked.
+ *
+ * @param {User} user - Discord user to probe
+ * @returns {Promise<DMChannel>} The DM channel if reachable
+ * @throws {Error} If DM creation or probe message fails
+ */
+async function ensureDmReachable(user) {
+  const dmChannel = await user.createDM();
+  // Send a lightweight probe message to verify DMs are actually reachable.
+  // createDM() almost always succeeds — the real test is sending a message.
+  await dmChannel.send('📋 Starting your support ticket — one moment…');
+  return dmChannel;
+}
 
 /**
  * Build the intro message for the DM and send it.
