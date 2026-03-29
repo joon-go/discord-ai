@@ -502,13 +502,13 @@ export async function handleTicketButton(interaction) {
       logger.warn('Cannot DM user — DMs likely disabled or bot blocked', { userId, error: err.message });
       await interaction.editReply({
         content:
-          '❌ I couldn\'t send you a DM. This usually means your DMs are closed for this server.\n\n' +
+          '❌ I couldn\'t send you a DM to open a ticket. This usually means your DMs are disabled for this server.\n\n' +
           '**How to fix it:**\n' +
           '1. Right-click (or long-press) the server icon\n' +
           '2. Go to **Privacy Settings**\n' +
           '3. Enable **"Allow direct messages from server members"**\n' +
           '4. Then click **Create Support Ticket** again\n\n' +
-          'If you\'ve blocked this bot, you\'ll need to unblock it first.',
+          'If you do not want me to DM you, send your questions to support@coderabbit.ai.',
       });
       return;
     }
