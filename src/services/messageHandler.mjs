@@ -497,11 +497,18 @@ export async function handleTicketButton(interaction) {
     // ── Try to DM the user ──
     let dmChannel;
     try {
-      dmChannel = await interaction.user.createDM();
+      dmChannel = await ensureDmReachable(interaction.user);
     } catch (err) {
-      logger.error('Cannot DM user', { userId, error: err.message });
+      logger.warn('Cannot DM user — DMs likely disabled or bot blocked', { userId, error: err.message });
       await interaction.editReply({
-        content: '❌ I can\'t send you a DM. Please make sure your DMs are open for this server (Server Settings → Privacy Settings → Direct Messages).',
+        content:
+          '❌ I couldn\'t send you a DM to open a ticket. This usually means your DMs are disabled for this server.\n\n' +
+          '**How to fix it:**\n' +
+          '1. Right-click (or long-press) the server icon\n' +
+          '2. Go to **Privacy Settings**\n' +
+          '3. Enable **"Allow direct messages from server members"**\n' +
+          '4. Then click **Create Support Ticket** again\n\n' +
+          'If you do not want me to DM you, send your questions to support@coderabbit.ai.',
       });
       return;
     }
@@ -808,7 +815,7 @@ export async function handleTicketCommand(interaction) {
   // ── Try to DM the user ──
   let dmChannel;
   try {
-    dmChannel = await interaction.user.createDM();
+    dmChannel = await ensureDmReachable(interaction.user);
   } catch (err) {
     logger.error('Cannot DM user for /ticket', { userId, error: err.message });
     await interaction.reply({
@@ -860,6 +867,22 @@ export async function handleTicketCommand(interaction) {
 // ═════════════════════════════════════════════════════════════════════
 //  HELPERS
 // ═════════════════════════════════════════════════════════════════════
+
+/**
+ * Ensure the user can receive DMs by creating a DM channel and sending a probe message.
+ * Returns the DM channel on success, or throws an error if DMs are blocked.
+ *
+ * @param {User} user - Discord user to probe
+ * @returns {Promise<DMChannel>} The DM channel if reachable
+ * @throws {Error} If DM creation or probe message fails
+ */
+async function ensureDmReachable(user) {
+  const dmChannel = await user.createDM();
+  // Send a lightweight probe message to verify DMs are actually reachable.
+  // createDM() almost always succeeds — the real test is sending a message.
+  await dmChannel.send('📋 Starting your support ticket — one moment…');
+  return dmChannel;
+}
 
 /**
  * Build the intro message for the DM and send it.
