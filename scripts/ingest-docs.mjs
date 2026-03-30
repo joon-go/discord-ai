@@ -108,7 +108,7 @@ async function crawlSite(baseUrl, maxPages) {
 }
 
 // ─── Load Local Repo Files ───────────────────────────────────────────
-const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', '.github', 'vendor', '.git']);
+const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', '.github', 'vendor', '.git', '.claude']);
 const MAX_FILE_SIZE = 100 * 1024; // 100KB
 
 async function loadLocalRepoFiles(repoPath) {
