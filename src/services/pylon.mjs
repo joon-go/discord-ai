@@ -235,9 +235,9 @@ export async function createIssue({ title, bodyHtml, requesterEmail, requesterNa
       'azure': 'azure_devops',
       'github enterprise': 'github_enterprise',
       'github_enterprise': 'github_enterprise',
-      'gitlab self-managed': 'gitlab_self_managed',
-      'gitlab_self_managed': 'gitlab_self_managed',
-      'gitlab self managed': 'gitlab_self_managed',
+      'gitlab self-managed': 'self_hosted_gitlab',
+      'gitlab_self_managed': 'self_hosted_gitlab',
+      'gitlab self managed': 'self_hosted_gitlab',
     };
     const mappedGitProvider = gitProviderMap[(gitProvider || '').toLowerCase()] || null;
 
