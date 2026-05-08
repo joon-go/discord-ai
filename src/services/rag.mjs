@@ -115,3 +115,58 @@ export async function queryKnowledgeBase(query, _retried = false) {
     return { context: '', sources: [], refs: [] };
   }
 }
+
+// ─── Search Source Code Only ─────────────────────────────────────────
+/**
+ * Search ONLY the source code chunks. Used by the silent verification
+ * tool — Claude calls this mid-response to verify factual claims against
+ * the mono repo source code.
+ *
+ * Returns a plain string of code snippets prefixed with their file paths,
+ * suitable for feeding back to Claude as a tool result. No URL refs are
+ * exposed because internal source paths must never leak to users.
+ *
+ * @param {string} query - Targeted search query (typically a feature name,
+ *                         config key, or behavior description)
+ * @param {number} [limit=5] - Max code chunks to return
+ * @returns {Promise<string>} Formatted code snippets, or empty string if
+ *                            nothing relevant found
+ */
+export async function searchSourceCode(query, limit = 5, _retried = false) {
+  try {
+    const col = await getCollection();
+    const results = await col.query({
+      queryTexts: [query],
+      nResults: limit,
+      where: { source: { $eq: 'SourceCode' } },
+    });
+
+    const chunks = [];
+    results?.documents?.[0]?.forEach((doc, i) => {
+      const distance = results.distances?.[0]?.[i] ?? 1;
+      const similarity = 1 - distance / 2;
+      if (similarity >= RELEVANCE_THRESHOLD) {
+        const meta = results.metadatas?.[0]?.[i] || {};
+        chunks.push(`// File: ${meta.title || meta.url || 'unknown'}\n${doc}`);
+      }
+    });
+
+    logger.info('Source code search completed', {
+      query: query.slice(0, 80),
+      results: chunks.length,
+    });
+
+    if (chunks.length === 0) {
+      return 'No relevant source code found for this query.';
+    }
+    return chunks.join('\n\n---\n\n');
+  } catch (err) {
+    if (!_retried && err.message?.includes('could not be found')) {
+      logger.warn('Collection reference stale during source search, retrying', { error: err.message });
+      collection = null;
+      return searchSourceCode(query, limit, true);
+    }
+    logger.error('Source code search failed', { error: err.message });
+    return 'Source code search failed.';
+  }
+}

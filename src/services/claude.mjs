@@ -1,8 +1,33 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { logger } from '../utils/logger.mjs';
+import { searchSourceCode } from './rag.mjs';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-4-5-20250929';
+
+// Max number of silent tool-use rounds before forcing a final answer.
+// Each round adds one API call (~2-5s latency). Cap prevents runaway.
+const MAX_TOOL_ROUNDS = parseInt(process.env.MAX_TOOL_ROUNDS || '3', 10);
+
+// Tool definitions exposed to Claude. The bot uses these silently — users
+// never see tool names or results in the final response.
+const TOOLS = [
+  {
+    name: 'search_source_code',
+    description:
+      'Silently search internal source code to verify factual claims about CodeRabbit features, configuration, behavior, or capabilities BEFORE answering the user. Use this whenever you would otherwise have to assume or extrapolate. The user does NOT see this tool call — only your final answer. Do not mention this tool, the search, or that you are verifying anything in your response. Pass a focused query (feature name, config key, command, or behavior description) — not the user\'s raw question.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description: 'Focused search query. Examples: "autofix command handler", "auto_review.enabled config", "git provider switching workspace".',
+        },
+      },
+      required: ['query'],
+    },
+  },
+];
 
 // ─── Tone Profiles ───────────────────────────────────────────────────
 // Set BOT_TONE in .env to control response style. Defaults to 'balanced'.
@@ -76,7 +101,23 @@ ${TONE_BLOCK}
 Sometimes your context will include source code snippets. When this happens:
 - Describe the behavior or feature in plain language — do NOT quote raw code blocks in your response
 - Never reference file paths, function names, or variable names from the code
-- Present the information as product knowledge, not as "I can see in the code..."`;
+- Present the information as product knowledge, not as "I can see in the code..."
+
+## Silent Verification (search_source_code tool)
+You have access to a \`search_source_code\` tool that lets you silently search internal source code. Use it BEFORE answering whenever:
+- The user asks "how do I disable/configure/enable X" — verify X actually has the config option you'd suggest
+- The user asks whether a feature/capability exists — verify it's actually implemented before confirming
+- You'd otherwise be tempted to assume, extrapolate, or guess
+- Two features have similar names (e.g., \`auto_review\` vs \`autofix\`) — verify which one the user actually means
+- You're about to suggest a YAML config key — verify the key exists
+
+CRITICAL behavior rules for this tool:
+1. **NEVER mention the tool, the search, or "verifying" in your response.** The user must not know you used it. Just give them the verified answer directly.
+2. Do NOT say things like "Let me check...", "I'm verifying...", "Based on my research...", "I looked into...", or anything that hints at internal lookups. Just answer naturally.
+3. Pass focused queries — feature names, config keys, command names, or behavior descriptions. NOT the user's raw question. Example: query "autofix command handler" not "how do I disable autofix".
+4. If the search returns no relevant code, treat that as "this functionality may not exist as the user described" — say "I don't have information on that" rather than fabricating.
+5. If the search reveals the user's assumption is wrong (e.g., "disable autofix" but autofix has no disable config), correct them gently with the actual mechanism — but never reference how you found out.
+6. Don't over-search. For greetings, ticket-flow acknowledgments, or off-topic refusals, skip the tool entirely.`;
 
 // ─── Generate Response ───────────────────────────────────────────────
 /**
@@ -107,13 +148,95 @@ export async function generateResponse(userMessage, kbContext = '', conversation
     { role: 'user', content: userContent },
   ];
 
+  // Tool-use loop: Claude may call search_source_code silently to verify
+  // claims before producing the final answer. Loop until either:
+  //   - Claude responds with text (stop_reason !== 'tool_use'), OR
+  //   - We hit MAX_TOOL_ROUNDS (forces a final answer)
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
+  let toolRounds = 0;
+
   try {
-    const response = await anthropic.messages.create({
+    let response = await anthropic.messages.create({
       model: MODEL,
       max_tokens: 2048,
       system: SYSTEM_PROMPT,
+      tools: TOOLS,
       messages,
     });
+    totalInputTokens += response.usage.input_tokens;
+    totalOutputTokens += response.usage.output_tokens;
+
+    while (response.stop_reason === 'tool_use' && toolRounds < MAX_TOOL_ROUNDS) {
+      toolRounds++;
+
+      // Add the assistant's response (containing tool_use blocks) to history
+      messages.push({ role: 'assistant', content: response.content });
+
+      // Execute each tool_use block and build tool_result blocks
+      const toolResults = [];
+      for (const block of response.content) {
+        if (block.type !== 'tool_use') continue;
+
+        let resultText = '';
+        if (block.name === 'search_source_code') {
+          const query = block.input?.query || '';
+          logger.info('Silent source code verification triggered', {
+            round: toolRounds,
+            query: query.slice(0, 80),
+          });
+          resultText = await searchSourceCode(query);
+        } else {
+          resultText = `Unknown tool: ${block.name}`;
+        }
+
+        toolResults.push({
+          type: 'tool_result',
+          tool_use_id: block.id,
+          content: resultText,
+        });
+      }
+
+      // Feed tool results back as a user message
+      messages.push({ role: 'user', content: toolResults });
+
+      // Get next response
+      response = await anthropic.messages.create({
+        model: MODEL,
+        max_tokens: 2048,
+        system: SYSTEM_PROMPT,
+        tools: TOOLS,
+        messages,
+      });
+      totalInputTokens += response.usage.input_tokens;
+      totalOutputTokens += response.usage.output_tokens;
+    }
+
+    // If we exhausted MAX_TOOL_ROUNDS and Claude still wants more tools,
+    // force one final answer without tools available.
+    if (response.stop_reason === 'tool_use' && toolRounds >= MAX_TOOL_ROUNDS) {
+      logger.warn('Max tool rounds reached — forcing final answer', { toolRounds });
+      messages.push({ role: 'assistant', content: response.content });
+      // Provide empty tool results so the conversation is well-formed
+      const fallbackResults = response.content
+        .filter(b => b.type === 'tool_use')
+        .map(b => ({
+          type: 'tool_result',
+          tool_use_id: b.id,
+          content: 'Search budget exceeded — answer from existing context only.',
+        }));
+      messages.push({ role: 'user', content: fallbackResults });
+
+      response = await anthropic.messages.create({
+        model: MODEL,
+        max_tokens: 2048,
+        system: SYSTEM_PROMPT,
+        // No tools on this final call — Claude must produce text
+        messages,
+      });
+      totalInputTokens += response.usage.input_tokens;
+      totalOutputTokens += response.usage.output_tokens;
+    }
 
     const text = response.content
       .filter(block => block.type === 'text')
@@ -121,9 +244,10 @@ export async function generateResponse(userMessage, kbContext = '', conversation
       .join('\n');
 
     logger.info('Claude response generated', {
-      inputTokens: response.usage.input_tokens,
-      outputTokens: response.usage.output_tokens,
+      inputTokens: totalInputTokens,
+      outputTokens: totalOutputTokens,
       model: MODEL,
+      toolRounds,
     });
 
     return text;
